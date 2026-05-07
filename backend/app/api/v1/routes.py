@@ -1,7 +1,7 @@
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from app.services.stock_ingest import load_watchlist_symbols
+from app.services.stock_ingest import load_watchlist_items, sync_market_snapshot
 from app.services.agent_orchestrator import orchestrator
 
 router = APIRouter()
@@ -9,7 +9,8 @@ router = APIRouter()
 
 @router.get('/market/overview')
 async def market_overview():
-    symbols = await load_watchlist_symbols()
+    await sync_market_snapshot()
+    watchlist_items = await load_watchlist_items()
     return JSONResponse(
         {
             'indices': [
@@ -17,7 +18,7 @@ async def market_overview():
                 {'symbol': 'HNX', 'price': 310.12, 'change': -0.18},
                 {'symbol': 'UPCOM', 'price': 82.92, 'change': 0.15},
             ],
-            'watchlist': symbols,
+            'watchlist': watchlist_items,
             'top_gainers': [
                 {'symbol': 'VNM', 'change': 4.5},
                 {'symbol': 'SSI', 'change': 3.8},

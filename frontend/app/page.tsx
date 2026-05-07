@@ -1,11 +1,11 @@
 import { ArrowUpRight, Sparkles, TrendingUp } from 'lucide-react';
 import MarketOverview from '../components/dashboard/MarketOverview';
 import AgentDebatePanel from '../components/agent/AgentDebatePanel';
-import { getDashboardData } from '../lib/api';
+import { getDashboardData, getSuggestedStock } from '../lib/api';
 
 type DashboardData = {
   indices: Array<{ symbol: string; price: number; change: number }>;
-  watchlist: string[];
+  watchlist: Array<{ symbol: string; price: number; change: number }>;
   top_gainers: Array<{ symbol: string; change: number }>;
   top_losers: Array<{ symbol: string; change: number }>;
   sector_heatmap: Array<{ sector: string; strength: number }>;
@@ -13,6 +13,14 @@ type DashboardData = {
 
 export default async function Home() {
   const data = (await getDashboardData()) as DashboardData;
+  const suggestion = await getSuggestedStock();
+  const watchlist = data.watchlist.map((item) =>
+    typeof item === 'string'
+      ? { symbol: item, price: 0, change: 0 }
+      : item,
+  );
+  const suggestedSymbol =
+    suggestion?.suggested?.symbol ?? watchlist[0]?.symbol ?? 'SSI';
 
   return (
     <main className="min-h-screen px-6 py-8 text-slate-100">
@@ -48,7 +56,7 @@ export default async function Home() {
               </div>
               <TrendingUp className="h-5 w-5 text-slate-300" />
             </div>
-            <AgentDebatePanel symbol="SSI" />
+            <AgentDebatePanel symbol={suggestedSymbol} />
           </section>
         </div>
 
@@ -61,10 +69,15 @@ export default async function Home() {
               </div>
             </div>
             <div className="space-y-3">
-              {data.watchlist.map((symbol: string) => (
-                <div key={symbol} className="flex items-center justify-between rounded-3xl border border-slate-800 bg-slate-900/70 px-4 py-3">
-                  <span className="font-semibold">{symbol}</span>
-                  <span className="text-slate-400">Watch</span>
+              {watchlist.map((item) => (
+                <div key={item.symbol} className="flex items-center justify-between rounded-3xl border border-slate-800 bg-slate-900/70 px-4 py-3">
+                  <div>
+                    <p className="font-semibold">{item.symbol}</p>
+                    <p className="text-xs text-slate-500">{item.price.toFixed(2)}</p>
+                  </div>
+                  <span className={item.change >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
+                    {item.change >= 0 ? '+' : ''}{item.change.toFixed(2)}%
+                  </span>
                 </div>
               ))}
             </div>

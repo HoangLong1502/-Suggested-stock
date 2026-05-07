@@ -42,7 +42,8 @@ services:
     ports:
       - '3010:3000'
     environment:
-      - NEXT_PUBLIC_API_URL=http://backend:8000/api/v1
+      - NEXT_PUBLIC_API_URL=http://localhost:5555/api/v1
+      - INTERNAL_API_URL=http://backend:8000/api/v1
     depends_on:
       - backend
 
