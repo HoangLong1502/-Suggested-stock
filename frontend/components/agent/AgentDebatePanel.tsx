@@ -1,0 +1,40 @@
+'use client';
+
+import { useQuery } from '@tanstack/react-query';
+import { getAgentDebate } from '../../lib/api';
+
+interface DebateItem {
+  agent: string;
+  message: string;
+  confidence: number;
+}
+
+export default function AgentDebatePanel({ symbol }: { readonly symbol: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['agentDebate', symbol],
+    queryFn: () => getAgentDebate(symbol),
+  });
+  const debate: DebateItem[] = data?.debate ?? [];
+
+  return (
+    <div className="space-y-4">
+      {isLoading ? (
+        <p className="text-slate-400">Loading debate...</p>
+      ) : (
+        debate.map((item) => (
+          <div key={item.agent} className="rounded-3xl border border-slate-800 bg-slate-950/80 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm uppercase tracking-[0.24em] text-slate-500">{item.agent}</p>
+                <p className="mt-2 text-lg font-semibold">{item.message}</p>
+              </div>
+              <span className="rounded-full bg-slate-800 px-3 py-1 text-xs uppercase tracking-[0.18em] text-slate-300">
+                {Math.round(item.confidence * 100)}%
+              </span>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
