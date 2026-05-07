@@ -14,9 +14,13 @@ async def run_agents(symbol: str):
 
 @router.get('/agents/debate/{symbol}')
 async def get_debate(symbol: str):
-    debates = [
-        {'agent': 'TechnicalAnalyst', 'message': 'Strong momentum on EMA crossover', 'confidence': 0.81},
-        {'agent': 'FundamentalAnalyst', 'message': 'Healthy ROE and stable debt', 'confidence': 0.68},
-        {'agent': 'RiskManager', 'message': 'Volatility medium, recommend 3% stop loss', 'confidence': 0.64},
+    result = await orchestrator.run_stock_pipeline(symbol.upper())
+    debate = [
+        {
+            'agent': agent['agent'],
+            'message': agent.get('rationale', ''),
+            'confidence': round(agent.get('score', 0.0), 2),
+        }
+        for agent in result.get('agents', [])
     ]
-    return JSONResponse({'symbol': symbol.upper(), 'debate': debates})
+    return JSONResponse({'symbol': symbol.upper(), 'debate': debate, 'decision': result.get('decision', {})})
