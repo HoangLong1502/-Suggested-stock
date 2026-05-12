@@ -38,14 +38,17 @@ services:
   frontend:
     build:
       context: ./frontend
-      dockerfile: Dockerfile
+    container_name: frontend-1
     ports:
-      - '3010:3000'
+      - '3000:3000'
     environment:
       - NEXT_PUBLIC_API_URL=http://localhost:5555/api/v1
       - INTERNAL_API_URL=http://backend:8000/api/v1
     depends_on:
       - backend
+    volumes:
+      - ./frontend:/app
+    command: npm run dev -- --hostname 0.0.0.0
 
 volumes:
   postgres_data:
