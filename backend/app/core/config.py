@@ -8,10 +8,12 @@ class Settings(BaseSettings):
     ollama_url: str = 'http://127.0.0.1:11434'
     environment: str = 'development'
     api_prefix: str = '/api/v1'
+    vnstock_enable: bool = True
 
     class Config:
         env_file = '.env'
         env_file_encoding = 'utf-8'
+        extra = 'ignore'  # Ignore extra fields from .env
 
 
 settings = Settings()
