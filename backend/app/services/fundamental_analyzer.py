@@ -27,44 +27,40 @@ class FundamentalAnalyzer:
         Fetch company fundamentals from vnstock or cached database.
         """
         # Try to get from database first
-        session = AsyncSessionLocal()
-        query = select(CompanyFundamental).where(
-            CompanyFundamental.stock_symbol == symbol
-        )
-        result = await session.execute(query)
-        cached = result.scalar_one_or_none()
-
-        # If cached data exists and is recent (< 1 day), use it
-        if cached:
-            age_hours = (datetime.utcnow() - cached.updated_at).total_seconds() / 3600
-            if age_hours < 24:
-                await session.close()
-                return FundamentalAnalyzer._entity_to_dict(cached)
-
-        # Fetch fresh data from vnstock
-        if vs is None:
-            await session.close()
-            return {'status': 'vnstock_not_available'}
-
-        try:
-            # Fetch from vnstock
-            # Note: These are free endpoints from vnstock library
-            fundamentals = await asyncio.to_thread(
-                FundamentalAnalyzer._fetch_from_vnstock, symbol
+        async with AsyncSessionLocal() as session:
+            query = select(CompanyFundamental).where(
+                CompanyFundamental.stock_symbol == symbol
             )
+            result = await session.execute(query)
+            cached = result.scalar_one_or_none()
 
-            # Save/update to database
-            if fundamentals and fundamentals.get('status') != 'error':
-                await FundamentalAnalyzer._save_to_database(
-                    symbol, fundamentals, session
+            # If cached data exists and is recent (< 1 day), use it
+            if cached:
+                age_hours = (datetime.utcnow() - cached.updated_at).total_seconds() / 3600
+                if age_hours < 24:
+                    return FundamentalAnalyzer._entity_to_dict(cached)
+
+            # Fetch fresh data from vnstock
+            if vs is None:
+                return {'status': 'vnstock_not_available'}
+
+            try:
+                # Fetch from vnstock
+                # Note: These are free endpoints from vnstock library
+                fundamentals = await asyncio.to_thread(
+                    FundamentalAnalyzer._fetch_from_vnstock, symbol
                 )
 
-            await session.close()
-            return fundamentals
+                # Save/update to database
+                if fundamentals and fundamentals.get('status') != 'error':
+                    await FundamentalAnalyzer._save_to_database(
+                        symbol, fundamentals, session
+                    )
 
-        except Exception as e:
-            await session.close()
-            return {'status': 'error', 'message': str(e)}
+                return fundamentals
+
+            except Exception as e:
+                return {'status': 'error', 'message': str(e)}
 
     @staticmethod
     def _fetch_from_vnstock(symbol: str) -> Dict[str, Any]:

@@ -1,8 +1,11 @@
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from typing import List, Annotated
 
-from app.services.stock_ingest import load_watchlist_items, sync_market_snapshot
+from app.models.postgres import AsyncSessionLocal
+from app.models.schema import Stock
+from app.services.stock_ingest import VN_INDEX_SYMBOLS, load_watchlist_items, sync_market_snapshot
 from app.services.agent_orchestrator import orchestrator
 from app.services.recommendation_engine import recommendation_engine
 from app.services.historical_analyzer import historical_analyzer
@@ -18,22 +21,43 @@ async def market_overview():
     """Get market overview with indices, watchlist, gainers, losers."""
     await sync_market_snapshot()
     watchlist_items = await load_watchlist_items()
+
+    async with AsyncSessionLocal() as session:
+        gainers_result = await session.execute(
+            select(Stock).order_by(Stock.change.desc()).limit(5)
+        )
+        losers_result = await session.execute(
+            select(Stock).order_by(Stock.change.asc()).limit(5)
+        )
+        indices_result = await session.execute(
+            select(Stock).where(Stock.symbol.in_(VN_INDEX_SYMBOLS))
+        )
+
+    top_gainers = [
+        {'symbol': stock.symbol, 'change': float(stock.change or 0.0)}
+        for stock in gainers_result.scalars().all()
+    ]
+    top_losers = [
+        {'symbol': stock.symbol, 'change': float(stock.change or 0.0)}
+        for stock in losers_result.scalars().all()
+    ]
+
+    stock_map = {stock.symbol: stock for stock in indices_result.scalars().all()}
+    indices = [
+        {
+            'symbol': symbol,
+            'price': float(stock_map[symbol].last_price or 0.0) if symbol in stock_map else 0.0,
+            'change': float(stock_map[symbol].change or 0.0) if symbol in stock_map else 0.0,
+        }
+        for symbol in VN_INDEX_SYMBOLS
+    ]
+
     return JSONResponse(
         {
-            'indices': [
-                {'symbol': 'VNINDEX', 'price': 1200.45, 'change': 0.72},
-                {'symbol': 'HNX', 'price': 310.12, 'change': -0.18},
-                {'symbol': 'UPCOM', 'price': 82.92, 'change': 0.15},
-            ],
+            'indices': indices,
             'watchlist': watchlist_items,
-            'top_gainers': [
-                {'symbol': 'VNM', 'change': 4.5},
-                {'symbol': 'SSI', 'change': 3.8},
-            ],
-            'top_losers': [
-                {'symbol': 'AAA', 'change': -5.4},
-                {'symbol': 'XYZ', 'change': -3.2},
-            ],
+            'top_gainers': top_gainers,
+            'top_losers': top_losers,
             'sector_heatmap': [
                 {'sector': 'Banking', 'strength': 0.7},
                 {'sector': 'Real Estate', 'strength': 0.3},
@@ -238,10 +262,30 @@ async def get_best_stock():
     🎯 Get the single BEST stock based on 2 months (60 days) AI analysis.
     Multiple AI agents collaborate to analyze all watched stocks.
     
-    Returns the stock with highest confidence consensus.
+    Returns the stock with highest confidence consensus along with buy timing.
     """
     try:
         result = await stock_ranker.get_best_stock()
+        if result.get('status') == 'error':
+            return JSONResponse(result, status_code=500)
+
+        if result.get('status') == 'no_high_confidence_stocks':
+            return JSONResponse(result)
+
+        best_symbol = result.get('best_stock')
+        if best_symbol:
+            agent_results = await orchestrator.run_stock_pipeline(best_symbol)
+            full_recommendation = await recommendation_engine.generate_full_recommendation(
+                best_symbol,
+                agent_results,
+            )
+            result['buy_timing'] = full_recommendation.get('buy_timing', {})
+            result['recommended_entry'] = full_recommendation.get('entry_points', {}).get('recommended_entry')
+            result['current_price'] = full_recommendation.get('current_price')
+            result['entry_points'] = full_recommendation.get('entry_points', {})
+            result['technical_snapshot'] = full_recommendation.get('indicators_snapshot', {})
+            result['timestamp'] = full_recommendation.get('timestamp') or result.get('timestamp')
+
         return JSONResponse(result)
     except Exception as e:
         return JSONResponse({'error': str(e)}, status_code=500)
@@ -357,6 +401,11 @@ async def consensus_debate(symbol: str):
         decision = agent_results.get('decision', {})
         
         # Organize debate
+        full_recommendation = await recommendation_engine.generate_full_recommendation(
+            symbol,
+            agent_results,
+        )
+
         return JSONResponse({
             'symbol': symbol,
             'analysis_period': '60 days (2 months)',
@@ -367,6 +416,11 @@ async def consensus_debate(symbol: str):
                 'SentimentAnalysis (Market Sentiment)',
                 'RiskManagement (Risk Assessment)',
             ],
+            'buy_timing': full_recommendation.get('buy_timing', {}),
+            'entry_points': full_recommendation.get('entry_points', {}),
+            'recommended_entry': full_recommendation.get('entry_points', {}).get('recommended_entry'),
+            'current_price': full_recommendation.get('current_price'),
+            'technical_snapshot': full_recommendation.get('indicators_snapshot', {}),
             'individual_analyses': [
                 {
                     'agent': agent['agent'],

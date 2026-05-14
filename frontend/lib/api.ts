@@ -1,8 +1,8 @@
-const apiUrl = (() => {
+export const apiUrl = (() => {
   if (typeof window === 'undefined') {
     return process.env.INTERNAL_API_URL ?? 'http://backend:8000/api/v1';
   }
-  return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:5555/api/v1';
+  return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 })();
 
 export async function getDashboardData() {
@@ -29,15 +29,25 @@ export async function getDashboardData() {
   }
 }
 
+export async function getBestStock() {
+  try {
+    const res = await fetch(`${apiUrl}/agents/best-stock`, { cache: 'no-store' });
+    if (!res.ok) return { best_stock: null };
+    return res.json();
+  } catch {
+    return { best_stock: null };
+  }
+}
+
 export async function getAgentDebate(symbol: string) {
   try {
-    const res = await fetch(`${apiUrl}/agents/debate/${symbol}`);
+    const res = await fetch(`${apiUrl}/agents/debate/${symbol}`, { cache: 'no-store' });
     if (!res.ok) {
-      return { symbol, debate: [], decision: null };
+      return { symbol, debate: [], consensus: null };
     }
     return res.json();
   } catch {
-    return { symbol, debate: [], decision: null };
+    return { symbol, debate: [], consensus: null };
   }
 }
 
