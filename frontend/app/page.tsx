@@ -1,6 +1,7 @@
 import { ArrowUpRight, Sparkles, TrendingUp } from 'lucide-react';
 import MarketOverview from '../components/dashboard/MarketOverview';
 import AgentDebatePanel from '../components/agent/AgentDebatePanel';
+import AIStockRanking from '../components/dashboard/AIStockRanking';
 import { getDashboardData, getSuggestedStock } from '../lib/api';
 
 type DashboardData = {
@@ -83,6 +84,8 @@ export default async function Home() {
             </div>
           </section>
 
+          <AIStockRanking />
+
           <section className="section-card">
             <div className="mb-4 flex items-center justify-between">
               <div>
@@ -95,7 +98,7 @@ export default async function Home() {
                 <div key={item.symbol} className="rounded-3xl border border-slate-800 bg-slate-900/70 px-4 py-3">
                   <div className="flex items-center justify-between">
                     <span>{item.symbol}</span>
-                    <span className="text-emerald-400">+{item.change}%</span>
+                    <span className="text-emerald-400">{item.change >= 0 ? '+' : ''}{item.change}%</span>
                   </div>
                 </div>
               ))}

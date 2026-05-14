@@ -1,5 +1,8 @@
-import React, { useState, useEffect } from 'react';
-import { AlertCircle, TrendingUp, Trophy, Users, Target } from 'lucide-react';
+'use client';
+
+import React, { useState, useEffect, useCallback } from 'react';
+import { AlertCircle, Trophy, Users, Target } from 'lucide-react';
+import { apiUrl, getBestStock } from '../../lib/api';
 
 interface StockRanking {
   symbol: string;
@@ -16,6 +19,24 @@ interface StockRanking {
     confidence: number;
     rationale: string;
   }>;
+}
+
+interface BestStockData {
+  best_stock: string;
+  recommendation: string;
+  confidence: number;
+  consensus_strength: number;
+  reasoning: string;
+  buy_timing: {
+    timing: string;
+    urgency: string;
+    buy_signals?: string[];
+    wait_reasons?: string[];
+    next_check_hours?: number;
+  };
+  recommended_entry?: number;
+  current_price?: number;
+  timestamp?: string;
 }
 
 interface TopStocksData {
@@ -35,29 +56,46 @@ interface TopStocksData {
 
 export default function AIStockRanking() {
   const [topStocks, setTopStocks] = useState<TopStocksData | null>(null);
+  const [bestStock, setBestStock] = useState<BestStockData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
   const [selectedTab, setSelectedTab] = useState<'all' | 'buy' | 'analysis'>('all');
 
-  useEffect(() => {
-    fetchTopStocks();
-    const interval = setInterval(fetchTopStocks, 5 * 60 * 1000); // Refresh every 5 minutes
-    return () => clearInterval(interval);
-  }, []);
-
-  const fetchTopStocks = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
+    await Promise.allSettled([fetchTopStocks(), fetchBestStock()]);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    const interval = setInterval(fetchData, 5 * 60 * 1000); // Refresh every 5 minutes
+    return () => clearInterval(interval);
+  }, [fetchData]);
+
+  const fetchTopStocks = async () => {
     try {
-      const response = await fetch('/api/v1/agents/top-stocks?limit=10&min_confidence=0.65');
+      const response = await fetch(`${apiUrl}/agents/top-stocks?limit=10&min_confidence=0.65`, {
+        cache: 'no-store',
+      });
       if (!response.ok) throw new Error('Failed to fetch top stocks');
       const data = await response.json();
       setTopStocks(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
-    } finally {
-      setLoading(false);
+    }
+  };
+
+  const fetchBestStock = async () => {
+    try {
+      const data = await getBestStock();
+      if (data && data.best_stock) {
+        setBestStock(data as BestStockData);
+      }
+    } catch {
+      // ignore best stock failures
     }
   };
 
@@ -94,6 +132,8 @@ export default function AIStockRanking() {
     return 'text-red-600';
   };
 
+  const bestHighlight = bestStock || (topStocks?.all_ranked?.[0] as BestStockData | undefined);
+
   if (loading && !topStocks) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -122,7 +162,7 @@ export default function AIStockRanking() {
             </p>
           </div>
           <button
-            onClick={fetchTopStocks}
+            onClick={fetchData}
             className="bg-blue-700 hover:bg-blue-800 px-4 py-2 rounded text-sm"
           >
             Refresh
@@ -174,29 +214,67 @@ export default function AIStockRanking() {
           </div>
 
           {/* Best Stock Highlight */}
-          {topStocks.all_ranked.length > 0 && (
+          {bestHighlight && (
             <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-300 p-6 rounded-lg">
-              <div className="flex items-start gap-4">
+              <div className="flex flex-col gap-4 md:flex-row md:items-start">
                 <div className="bg-yellow-400 text-white rounded-full p-3">
                   <Target className="w-6 h-6" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm text-gray-600">🏆 Best Stock (Highest Confidence)</p>
+                  <p className="text-sm text-gray-600">🏆 Best AI stock pick hôm nay</p>
                   <h3 className="text-3xl font-bold text-gray-900">
-                    {topStocks.all_ranked[0].symbol}
+                    {bestHighlight.best_stock}
                   </h3>
-                  <div className="mt-2 flex items-center gap-4">
-                    <span className={`badge ${getVerdictBadge(topStocks.all_ranked[0].recommendation)}`}>
-                      {topStocks.all_ranked[0].recommendation.toUpperCase()}
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <span className={`badge ${getVerdictBadge(bestHighlight.recommendation)}`}>
+                      {bestHighlight.recommendation.toUpperCase()}
                     </span>
-                    <span className={`text-lg font-bold ${getConfidenceColor(topStocks.all_ranked[0].confidence)}`}>
-                      {topStocks.all_ranked[0].confidence}% Confidence
+                    <span className={`text-lg font-bold ${getConfidenceColor(bestHighlight.confidence)}`}>
+                      {bestHighlight.confidence}% Confidence
                     </span>
                     <span className="text-gray-600">
-                      Consensus: {topStocks.all_ranked[0].consensus_strength}%
+                      Consensus: {bestHighlight.consensus_strength}%
                     </span>
                   </div>
-                  <p className="text-gray-700 mt-3">{topStocks.all_ranked[0].reasoning}</p>
+                  <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+                    <p className="font-semibold text-slate-900">Tại sao AI chọn mã này</p>
+                    <p className="mt-2">{bestHighlight.reasoning}</p>
+                  </div>
+
+                  {bestStock?.buy_timing?.timing && (
+                    <div className="mt-4 rounded-3xl border border-yellow-300 bg-yellow-100 p-4">
+                      <p className="text-sm text-yellow-800 uppercase tracking-[0.24em]">Thời điểm nên mua</p>
+                      <p className="mt-2 text-xl font-semibold text-yellow-900">
+                        {bestStock.buy_timing.timing} · {bestStock.buy_timing.urgency}
+                      </p>
+                      <p className="mt-2 text-sm text-gray-700">
+                        {bestStock.buy_timing.buy_signals?.join(', ') || 'Dựa trên tín hiệu RSI, MACD và khối lượng.'}
+                      </p>
+                    </div>
+                  )}
+
+                  {(bestStock?.recommended_entry || bestStock?.current_price) && (
+                    <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                      <div className="rounded-3xl bg-white p-4 text-sm text-slate-700 border border-slate-200">
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Giá hiện tại</p>
+                        <p className="mt-1 text-xl font-semibold text-slate-900">
+                          {bestStock?.current_price?.toFixed(2) ?? 'N/A'}
+                        </p>
+                      </div>
+                      <div className="rounded-3xl bg-white p-4 text-sm text-slate-700 border border-slate-200">
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Entry đề xuất</p>
+                        <p className="mt-1 text-xl font-semibold text-slate-900">
+                          {bestStock?.recommended_entry?.toFixed(2) ?? 'N/A'}
+                        </p>
+                      </div>
+                      <div className="rounded-3xl bg-white p-4 text-sm text-slate-700 border border-slate-200">
+                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Kiểm tra lại sau</p>
+                        <p className="mt-1 text-xl font-semibold text-slate-900">
+                          {bestStock?.buy_timing?.next_check_hours ?? 4} giờ
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -238,7 +316,7 @@ export default function AIStockRanking() {
 
           {/* Stocks List */}
           <div className="space-y-3">
-            {(selectedTab === 'all' ? topStocks.all_ranked : topStocks.buy_recommendations).map((stock) => (
+            {(selectedTab === 'buy' ? topStocks.buy_recommendations : topStocks.all_ranked).map((stock) => (
               <div
                 key={stock.symbol}
                 className={`border rounded-lg p-4 cursor-pointer transition-all ${

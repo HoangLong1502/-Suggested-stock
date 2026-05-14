@@ -1,12 +1,13 @@
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.schema import Stock
+from app.models.schema import Stock, Watchlist
 from app.models.postgres import AsyncSessionLocal
 
 
@@ -15,16 +16,20 @@ DEFAULT_WATCHLIST = ['SSI', 'VNM', 'VCB', 'FPT', 'MWG', 'VHM', 'PNJ', 'HPG', 'TP
 
 
 async def fetch_market_data() -> List[Dict[str, Any]]:
-    url = 'https://finfo-api.vndirect.com.vn/v4/stock_prices?date=' + datetime.utcnow().strftime('%Y%m%d')
+    market_date = datetime.now(tz=ZoneInfo('Asia/Ho_Chi_Minh'))
     async with httpx.AsyncClient(timeout=15.0) as client:
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, dict) and payload.get('data'):
-                return payload['data'][:50]
-        except Exception:
-            return []
+        for offset in range(0, 3):
+            date_str = (market_date - timedelta(days=offset)).strftime('%Y%m%d')
+            url = f'https://finfo-api.vndirect.com.vn/v4/stock_prices?date={date_str}'
+
+            try:
+                response = await client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict) and payload.get('data'):
+                    return payload['data'][:50]
+            except Exception:
+                continue
     return []
 
 
@@ -46,7 +51,7 @@ async def sync_market_snapshot() -> None:
                 'last_price': float(row.get('close', 0.0) or 0.0),
                 'change': float(row.get('change', 0.0) or 0.0),
                 'volume': float(row.get('totalVolume', 0.0) or 0.0),
-                'metadata': row,
+                'stock_metadata': row,
             }
             if existing:
                 await session.execute(
@@ -59,8 +64,16 @@ async def sync_market_snapshot() -> None:
 
 async def load_watchlist_symbols() -> List[str]:
     async with AsyncSessionLocal() as session:
-        result = await session.execute(Stock.__table__.select().limit(20))
-        rows = result.fetchall()
+        watchlist_result = await session.execute(
+            select(Watchlist).order_by(Watchlist.created_at.desc()).limit(1)
+        )
+        watchlist = watchlist_result.scalar_one_or_none()
+
+        if watchlist and isinstance(watchlist.symbols, list) and watchlist.symbols:
+            return watchlist.symbols
+
+        legacy_result = await session.execute(Stock.__table__.select().limit(20))
+        rows = legacy_result.fetchall()
         symbols = [row[0].symbol for row in rows]
         return symbols if symbols else DEFAULT_WATCHLIST
 

@@ -5,7 +5,7 @@ import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'rec
 interface MarketOverviewProps {
   readonly overview: {
     readonly indices: ReadonlyArray<{ symbol: string; price: number; change: number }>;
-    readonly watchlist: readonly string[];
+    readonly watchlist: ReadonlyArray<{ symbol: string; price: number; change: number }>;
     readonly top_gainers: ReadonlyArray<{ symbol: string; change: number }>;
     readonly top_losers: ReadonlyArray<{ symbol: string; change: number }>;
     readonly sector_heatmap: ReadonlyArray<{ sector: string; strength: number }>;

@@ -3,6 +3,7 @@ import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from app.api.v1.agents import router as agent_router
 from app.api.v1.routes import router as market_router
@@ -30,6 +31,10 @@ connected_websockets: list[WebSocket] = []
 async def startup_event():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await conn.execute(
+            text("ALTER TABLE historical_prices ADD COLUMN IF NOT EXISTS data_metadata JSON DEFAULT '{}'"
+            )
+        )
     _ = asyncio.create_task(periodic_market_sync())
 
 

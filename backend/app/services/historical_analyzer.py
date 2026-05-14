@@ -30,10 +30,16 @@ class HistoricalAnalyzer:
             days: Number of days to fetch (default: 60)
             session: Database session
         """
-        if session is None:
-            session = AsyncSessionLocal()
-
         cutoff_date = datetime.utcnow() - timedelta(days=days)
+
+        if session is None:
+            async with AsyncSessionLocal() as session:
+                return await HistoricalAnalyzer._fetch_prices_with_session(symbol, cutoff_date, session)
+
+        return await HistoricalAnalyzer._fetch_prices_with_session(symbol, cutoff_date, session)
+
+    @staticmethod
+    async def _fetch_prices_with_session(symbol: str, cutoff_date: datetime, session: AsyncSession) -> List[Dict[str, Any]]:
         query = select(HistoricalPrice).where(
             HistoricalPrice.stock_symbol == symbol,
             HistoricalPrice.date >= cutoff_date,
