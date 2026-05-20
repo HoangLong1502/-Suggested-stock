@@ -10,8 +10,8 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { readonly children: ReactNode }) {
   return (
-    <html lang="en">
-      <body>
+    <html lang="vi" className="min-h-full bg-[#08101e] text-slate-100 antialiased">
+      <body className="min-h-screen bg-[#08101e] text-slate-100 antialiased">
         <QueryProvider>{children}</QueryProvider>
       </body>
     </html>
