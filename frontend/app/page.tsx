@@ -1,27 +1,60 @@
 import { ArrowUpRight, Sparkles, TrendingUp } from 'lucide-react';
 import MarketOverview from '../components/dashboard/MarketOverview';
+import WatchlistMovers from '../components/dashboard/WatchlistMovers';
 import AgentDebatePanel from '../components/agent/AgentDebatePanel';
 import AIStockRanking from '../components/dashboard/AIStockRanking';
-import { getDashboardData, getSuggestedStock } from '../lib/api';
+import { getDashboardData } from '../lib/api';
+
+type WatchlistRow = {
+  symbol: string;
+  price: number;
+  change: number;
+  change_pct?: number;
+  trading_date?: string;
+  signal?: string;
+  signal_vi?: string;
+  volume?: number;
+  quote_source_note?: string;
+  market_session?: { label_vi?: string; phase?: string; is_trading_hours?: boolean };
+};
 
 type DashboardData = {
   indices: Array<{ symbol: string; price: number; change: number }>;
-  watchlist: Array<{ symbol: string; price: number; change: number }>;
-  top_gainers: Array<{ symbol: string; change: number }>;
-  top_losers: Array<{ symbol: string; change: number }>;
+  watchlist: Array<WatchlistRow | string>;
+  top_gainers: Array<{
+    symbol: string;
+    change: number;
+    change_pct?: number;
+    last_close?: number | null;
+    prev_close?: number | null;
+    trading_date?: string;
+    signal?: string;
+    signal_vi?: string;
+  }>;
+  top_losers: Array<{
+    symbol: string;
+    change: number;
+    change_pct?: number;
+    last_close?: number | null;
+    prev_close?: number | null;
+    trading_date?: string;
+    signal?: string;
+    signal_vi?: string;
+  }>;
   sector_heatmap: Array<{ sector: string; strength: number }>;
+  market_session?: { label_vi?: string; phase?: string };
+  chart_preview?: Array<{ name: string; value: number }>;
 };
 
 export default async function Home() {
   const data = (await getDashboardData()) as DashboardData;
-  const suggestion = await getSuggestedStock();
   const watchlist = data.watchlist.map((item) =>
     typeof item === 'string'
       ? { symbol: item, price: 0, change: 0 }
       : item,
   );
-  const suggestedSymbol =
-    suggestion?.suggested?.symbol ?? watchlist[0]?.symbol ?? 'SSI';
+  /** Không gọi /agents/suggest ở SSR — endpoint đó chạy nhiều agent/ mã, dễ làm tab quay vòng vài phút. */
+  const suggestedSymbol = watchlist[0]?.symbol ?? 'SSI';
 
   return (
     <main className="min-h-screen px-6 py-8 text-slate-100">
@@ -63,47 +96,16 @@ export default async function Home() {
 
         <aside className="space-y-5">
           <section className="section-card">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Watchlist</p>
-                <h2 className="text-2xl font-semibold">Top Vietnamese symbols</h2>
-              </div>
-            </div>
-            <div className="space-y-3">
-              {watchlist.map((item) => (
-                <div key={item.symbol} className="flex items-center justify-between rounded-3xl border border-slate-800 bg-slate-900/70 px-4 py-3">
-                  <div>
-                    <p className="font-semibold">{item.symbol}</p>
-                    <p className="text-xs text-slate-500">{item.price.toFixed(2)}</p>
-                  </div>
-                  <span className={item.change >= 0 ? 'text-emerald-400' : 'text-rose-400'}>
-                    {item.change >= 0 ? '+' : ''}{item.change.toFixed(2)}%
-                  </span>
-                </div>
-              ))}
-            </div>
+            <WatchlistMovers
+              watchlist={watchlist as WatchlistRow[]}
+              topGainers={data.top_gainers ?? []}
+              topLosers={data.top_losers ?? []}
+              sessionLabel={data.market_session?.label_vi}
+            />
           </section>
 
           <AIStockRanking />
 
-          <section className="section-card">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Signals</p>
-                <h2 className="text-2xl font-semibold">Top movers</h2>
-              </div>
-            </div>
-            <div className="grid gap-3">
-              {data.top_gainers.map((item) => (
-                <div key={item.symbol} className="rounded-3xl border border-slate-800 bg-slate-900/70 px-4 py-3">
-                  <div className="flex items-center justify-between">
-                    <span>{item.symbol}</span>
-                    <span className="text-emerald-400">{item.change >= 0 ? '+' : ''}{item.change}%</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </section>
         </aside>
       </div>
     </main>

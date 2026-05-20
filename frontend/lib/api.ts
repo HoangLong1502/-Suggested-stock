@@ -5,37 +5,71 @@ export const apiUrl = (() => {
   return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 })();
 
+const SSR_FETCH_MS = 70_000;
+
+async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+export const WATCHLIST_FALLBACK_SYMBOLS = [
+  'SSI', 'VNM', 'VCB', 'FPT', 'MWG', 'VHM', 'PNJ', 'HPG', 'TPB', 'ACB', 'BVH', 'MSN', 'NVL', 'GAS', 'PXL',
+] as const;
+
 export async function getDashboardData() {
   try {
-    const res = await fetch(`${apiUrl}/market/overview`, { cache: 'no-store' });
+    const res = await fetchWithTimeout(`${apiUrl}/market/overview`, SSR_FETCH_MS);
     if (!res.ok) {
       return {
         indices: [],
-        watchlist: [],
+        watchlist: WATCHLIST_FALLBACK_SYMBOLS.map((symbol) => ({ symbol, price: 0, change: 0 })),
         top_gainers: [],
         top_losers: [],
         sector_heatmap: [],
+        chart_preview: [],
       };
     }
-    return res.json();
+    const data = await res.json();
+    if (!Array.isArray(data.watchlist) || data.watchlist.length === 0) {
+      return {
+        ...data,
+        watchlist: WATCHLIST_FALLBACK_SYMBOLS.map((symbol) => ({ symbol, price: 0, change: 0 })),
+      };
+    }
+    return data;
   } catch {
     return {
       indices: [],
-      watchlist: [],
+      watchlist: WATCHLIST_FALLBACK_SYMBOLS.map((symbol) => ({ symbol, price: 0, change: 0 })),
       top_gainers: [],
       top_losers: [],
       sector_heatmap: [],
+      chart_preview: [],
     };
   }
 }
 
+const AGENT_LONG_FETCH_MS = 900_000;
+
 export async function getBestStock() {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), AGENT_LONG_FETCH_MS);
   try {
-    const res = await fetch(`${apiUrl}/agents/best-stock`, { cache: 'no-store' });
+    const res = await fetch(`${apiUrl}/agents/best-stock`, {
+      cache: 'no-store',
+      signal: ctrl.signal,
+    });
     if (!res.ok) return { best_stock: null };
     return res.json();
   } catch {
     return { best_stock: null };
+  } finally {
+    clearTimeout(t);
   }
 }
 
