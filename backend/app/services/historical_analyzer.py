@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.postgres import AsyncSessionLocal
-from app.models.schema import HistoricalPrice, Stock
+from app.models.schema import HistoricalPrice
 
 
 class HistoricalAnalyzer:
@@ -267,6 +267,79 @@ class HistoricalAnalyzer:
             'momentum': HistoricalAnalyzer.calculate_price_momentum(prices),
             'overbought_oversold': HistoricalAnalyzer.identify_overbought_oversold(prices),
         }
+
+    @staticmethod
+    async def snapshot_movers_from_db(limit: int = 5) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Build top gainers/losers using last vs previous close in historical_prices
+        (fallback when live quote table is flat / empty).
+        """
+        async with AsyncSessionLocal() as session:
+            sym_rows = await session.execute(select(HistoricalPrice.stock_symbol).distinct())
+            symbols = [s for s in sym_rows.scalars().all() if s]
+
+        movers: List[Dict[str, Any]] = []
+        for sym in symbols:
+            prices = await HistoricalAnalyzer.get_historical_prices(sym, days=10)
+            if len(prices) < 2:
+                continue
+            c0 = float(prices[-1]['close'])
+            c1 = float(prices[-2]['close'])
+            if c1 <= 0:
+                continue
+            pct = round(((c0 - c1) / c1) * 100, 2)
+            sig = 'bull' if pct > 0.05 else ('bear' if pct < -0.05 else 'flat')
+            sig_vi = 'Tích cực' if sig == 'bull' else ('Tiêu cực' if sig == 'bear' else 'Trung lập')
+            d_last = prices[-1].get('date')
+            date_s = d_last.isoformat()[:10] if hasattr(d_last, 'isoformat') else str(d_last)[:10]
+            movers.append(
+                {
+                    'symbol': sym,
+                    'change': pct,
+                    'change_pct': pct,
+                    'last_close': round(c0, 2),
+                    'prev_close': round(c1, 2),
+                    'trading_date': date_s,
+                    'signal': sig,
+                    'signal_vi': sig_vi,
+                }
+            )
+
+        movers.sort(key=lambda x: x['change'], reverse=True)
+        gainers = movers[:limit]
+        losers_sorted = sorted(movers, key=lambda x: x['change'])
+        losers = losers_sorted[:limit]
+        return gainers, losers
+
+    @staticmethod
+    async def last_close_and_day_pct(symbol: str, days: int = 5) -> Tuple[Optional[float], Optional[float], Optional[str]]:
+        prices = await HistoricalAnalyzer.get_historical_prices(symbol, days=days)
+        if not prices:
+            return None, None, None
+        last = prices[-1]
+        c = float(last['close'])
+        date_s = last['date'].isoformat()[:10] if hasattr(last['date'], 'isoformat') else str(last['date'])[:10]
+        if len(prices) < 2:
+            return c, 0.0, date_s
+        p = float(prices[-2]['close'])
+        if p <= 0:
+            return c, 0.0, date_s
+        pct = round(((c - p) / p) * 100, 4)
+        return c, pct, date_s
+
+    @staticmethod
+    async def sparkline_series(symbol: str, n: int = 7) -> List[Dict[str, Any]]:
+        """Last n closes as chart points (time labels illustrative)."""
+        prices = await HistoricalAnalyzer.get_historical_prices(symbol, days=max(20, n + 3))
+        if len(prices) < 2:
+            return []
+        tail = prices[-n:]
+        slots = ['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00']
+        out: List[Dict[str, Any]] = []
+        for i, p in enumerate(tail):
+            label = slots[i] if i < len(slots) else f'T+{i}'
+            out.append({'name': label, 'value': round(float(p['close']), 2)})
+        return out
 
 
 # Singleton instance

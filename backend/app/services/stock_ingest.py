@@ -1,64 +1,216 @@
 import asyncio
-from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from datetime import datetime, timedelta, time
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import httpx
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, desc
 
-from app.models.schema import Stock, Watchlist
+from app.models.schema import Stock, Watchlist, HistoricalPrice
 from app.models.postgres import AsyncSessionLocal
 
 
 VN_INDEX_SYMBOLS = ['VNINDEX', 'HNX', 'UPCOM']
 DEFAULT_WATCHLIST = ['SSI', 'VNM', 'VCB', 'FPT', 'MWG', 'VHM', 'PNJ', 'HPG', 'TPB', 'ACB', 'BVH', 'MSN', 'NVL', 'GAS']
 
+FINFO_STOCK_PRICES = 'https://finfo-api.vndirect.com.vn/v4/stock_prices'
 
-async def fetch_market_data() -> List[Dict[str, Any]]:
-    market_date = datetime.now(tz=ZoneInfo('Asia/Ho_Chi_Minh'))
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        for offset in range(0, 3):
-            date_str = (market_date - timedelta(days=offset)).strftime('%Y%m%d')
-            url = f'https://finfo-api.vndirect.com.vn/v4/stock_prices?date={date_str}'
 
-            try:
-                response = await client.get(url)
-                response.raise_for_status()
-                payload = response.json()
-                if isinstance(payload, dict) and payload.get('data'):
-                    return payload['data'][:50]
-            except Exception:
-                continue
-    return []
+def vietnam_market_session(now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Rough HoSE / VN market clock (Mon–Fri, ICT). Used for UI copy, not exchange validation."""
+    tz = ZoneInfo('Asia/Ho_Chi_Minh')
+    now = now or datetime.now(tz)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=tz)
+    else:
+        now = now.astimezone(tz)
+
+    wd = now.weekday()
+    if wd >= 5:
+        return {
+            'phase': 'weekend',
+            'is_trading_day': False,
+            'is_trading_hours': False,
+            'label_vi': 'Cuối tuần — không có phiên giao dịch',
+        }
+
+    t = now.time()
+    morning_open, morning_close = time(9, 0), time(11, 30)
+    afternoon_open, afternoon_close = time(13, 0), time(15, 0)
+
+    if t < morning_open:
+        phase = 'pre_open'
+        label = 'Trước giờ mở cửa (09:00)'
+        hours = False
+    elif morning_open <= t <= morning_close:
+        phase = 'morning'
+        label = 'Phiên sáng đang diễn ra'
+        hours = True
+    elif morning_close < t < afternoon_open:
+        phase = 'lunch_break'
+        label = 'Nghỉ trưa (11:30–13:00)'
+        hours = False
+    elif afternoon_open <= t <= afternoon_close:
+        phase = 'afternoon'
+        label = 'Phiên chiều đang diễn ra'
+        hours = True
+    else:
+        phase = 'after_close'
+        label = 'Đã hết phiên — hiển thị % thay đổi theo bản ghi giao dịch mới nhất từ nguồn dữ liệu'
+        hours = False
+
+    return {
+        'phase': phase,
+        'is_trading_day': True,
+        'is_trading_hours': hours,
+        'label_vi': label,
+        'as_of': now.isoformat(),
+    }
+
+
+def _float_or_none(val: Any) -> Optional[float]:
+    if val is None or val == '':
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def extract_change_pct(row: Dict[str, Any], close: float) -> float:
+    """Best-effort daily % change from VNDirect finfo row (field names vary)."""
+    for key in (
+        'pctChange',
+        'changePercent',
+        'changePc',
+        'percentChange',
+        'priceChangePercent',
+        'rate',
+        'changeRatio',
+        'deltaRatio',
+    ):
+        v = _float_or_none(row.get(key))
+        if v is not None:
+            return round(v, 4)
+
+    change_abs = _float_or_none(row.get('change'))
+    ref = _float_or_none(
+        row.get('basicPrice')
+        or row.get('refPrice')
+        or row.get('r')
+        or row.get('adPrice')
+        or row.get('priorClose')
+        or row.get('prevClosePrice')
+    )
+    if change_abs is not None and ref is not None and ref != 0:
+        return round((change_abs / ref) * 100.0, 4)
+
+    prev_close = _float_or_none(
+        row.get('priorClose') or row.get('prevClosePrice') or row.get('priorClosePrice')
+    )
+    if prev_close is not None and prev_close > 0 and close:
+        return round(((close - prev_close) / prev_close) * 100.0, 4)
+
+    return 0.0
+
+
+def _parse_row_to_values(row: Dict[str, Any]) -> Dict[str, Any]:
+    close = float(
+        row.get('close')
+        or row.get('accumulatedPrice')
+        or row.get('adClose')
+        or row.get('average')
+        or 0.0
+    )
+    change_abs = float(row.get('change') or 0.0)
+    change_pct = extract_change_pct(row, close)
+    trading_date = row.get('date') or row.get('tradingDate') or row.get('tradeDate')
+
+    meta = {
+        **row,
+        'change_pct_computed': change_pct,
+        'change_abs': change_abs,
+        'trading_date': trading_date,
+        'quote_synced_at': datetime.now(tz=ZoneInfo('UTC')).isoformat(),
+    }
+    return {
+        'symbol': (row.get('symbol') or row.get('code') or '').upper(),
+        'name': row.get('name') or row.get('symbol') or row.get('code'),
+        'exchange': row.get('exchange', 'VN'),
+        'last_price': close,
+        'change': change_pct,
+        'volume': float(row.get('totalVolume') or row.get('nmTotalTradedQty') or row.get('volume') or 0.0),
+        'stock_metadata': meta,
+    }
+
+
+async def fetch_latest_price_row(client: httpx.AsyncClient, symbol: str) -> Optional[Dict[str, Any]]:
+    """Latest finfo row for symbol (walks back calendar days if empty / holiday)."""
+    sym = symbol.upper().strip()
+    tz = ZoneInfo('Asia/Ho_Chi_Minh')
+    for offset in range(0, 20):
+        day = (datetime.now(tz) - timedelta(days=offset)).strftime('%Y-%m-%d')
+        params = {
+            'q': f'code:{sym}~date:gte:{day}~date:lte:{day}',
+            'sort': 'date',
+            'size': 30,
+            'page': 1,
+        }
+        try:
+            response = await client.get(FINFO_STOCK_PRICES, params=params)
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload.get('data') if isinstance(payload, dict) else None
+            if isinstance(rows, list) and rows:
+                return rows[-1]
+        except Exception:
+            continue
+    return None
+
+
+async def _fetch_symbol_safe(
+    client: httpx.AsyncClient,
+    sem: asyncio.Semaphore,
+    symbol: str,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    async with sem:
+        try:
+            row = await fetch_latest_price_row(client, symbol)
+            return symbol, row
+        except Exception:
+            return symbol, None
 
 
 async def sync_market_snapshot() -> None:
-    rows = await fetch_market_data()
+    """
+    Refresh prices for indices + watchlist + default liquid names.
+    Persists daily % change in Stock.change (UI expects percent), full row in stock_metadata.
+    """
+    watch = await load_watchlist_symbols()
+    symbols = list(dict.fromkeys([*VN_INDEX_SYMBOLS, *watch, *DEFAULT_WATCHLIST]))
+
+    sem = asyncio.Semaphore(12)
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        pairs = await asyncio.gather(*[_fetch_symbol_safe(client, sem, s) for s in symbols])
+
     async with AsyncSessionLocal() as session:
-        for row in rows:
-            symbol = row.get('symbol') or row.get('code')
-            if not symbol:
+        for sym, row in pairs:
+            if not row:
                 continue
-            query = await session.execute(
-                Stock.__table__.select().where(Stock.symbol == symbol),
-            )
-            existing = query.scalar_one_or_none()
-            values = {
-                'symbol': symbol,
-                'name': row.get('name', symbol),
-                'exchange': row.get('exchange', 'VN'),
-                'last_price': float(row.get('close', 0.0) or 0.0),
-                'change': float(row.get('change', 0.0) or 0.0),
-                'volume': float(row.get('totalVolume', 0.0) or 0.0),
-                'stock_metadata': row,
-            }
+            values = _parse_row_to_values(row)
+            code = values['symbol']
+            if not code or float(values.get('last_price') or 0) <= 0:
+                continue
+
+            res = await session.execute(select(Stock).where(Stock.symbol == code))
+            existing = res.scalar_one_or_none()
+            payload = {k: v for k, v in values.items() if k != 'symbol'}
             if existing:
                 await session.execute(
-                    Stock.__table__.update().where(Stock.id == existing.id).values(**values),
+                    Stock.__table__.update().where(Stock.id == existing.id).values(**payload),
                 )
             else:
-                session.add(Stock(**values))
+                session.add(Stock(symbol=code, **payload))
         await session.commit()
 
 
@@ -69,30 +221,127 @@ async def load_watchlist_symbols() -> List[str]:
         )
         watchlist = watchlist_result.scalar_one_or_none()
 
-        if watchlist and isinstance(watchlist.symbols, list) and watchlist.symbols:
-            return watchlist.symbols
+        if watchlist and isinstance(watchlist.symbols, list):
+            cleaned = [str(s).strip().upper() for s in watchlist.symbols if s and str(s).strip()]
+            if cleaned:
+                return cleaned
 
-        legacy_result = await session.execute(Stock.__table__.select().limit(20))
-        rows = legacy_result.fetchall()
-        symbols = [row[0].symbol for row in rows]
-        return symbols if symbols else DEFAULT_WATCHLIST
+        legacy_result = await session.execute(select(Stock).limit(20))
+        stocks = legacy_result.scalars().all()
+        symbols = [str(s.symbol).strip().upper() for s in stocks if s.symbol]
+        return symbols if symbols else list(DEFAULT_WATCHLIST)
+
+
+async def _fill_prices_from_historical_db(items: List[Dict[str, Any]]) -> None:
+    """One DB session: last close + day % from last two bars (avoids wiping good prices)."""
+    note = (
+        'Giá và % thay đổi lấy từ dữ liệu lịch sử trong DB (bản demo hoặc khi API giá ngoài chưa trả về).'
+    )
+    async with AsyncSessionLocal() as session:
+
+        for item in items:
+            sym = item['symbol']
+            ch = float(item.get('change_pct') or item.get('change') or 0)
+            need_price = not (item.get('price') and float(item['price']) > 0)
+            need_change = abs(ch) < 1e-9
+            if not need_price and not need_change:
+                continue
+
+            res = await session.execute(
+                select(HistoricalPrice.close_price, HistoricalPrice.date)
+                .where(HistoricalPrice.stock_symbol == sym)
+                .order_by(desc(HistoricalPrice.date))
+                .limit(2),
+            )
+            rows = res.all()
+            if not rows:
+                continue
+            c0 = float(rows[0][0])
+            d0 = rows[0][1]
+            date_s = d0.isoformat()[:10] if hasattr(d0, 'isoformat') else str(d0)[:10]
+
+            if need_price:
+                item['price'] = c0
+
+            if len(rows) >= 2:
+                c1 = float(rows[1][0])
+                px = float(item.get('price') or 0) or c0
+                if c1 > 0 and (need_change or need_price):
+                    pct = round(((px - c1) / c1) * 100, 4)
+                    item['change'] = pct
+                    item['change_pct'] = pct
+            elif need_price:
+                item['change'] = 0.0
+                item['change_pct'] = 0.0
+
+            if not item.get('trading_date'):
+                item['trading_date'] = date_s
+            if need_price or need_change:
+                item['quote_source_note'] = note
 
 
 async def load_watchlist_items() -> List[Dict[str, Any]]:
     symbols = await load_watchlist_symbols()
+    if not symbols:
+        symbols = list(DEFAULT_WATCHLIST)
+    session_info = vietnam_market_session()
+
     async with AsyncSessionLocal() as session:
         result = await session.execute(select(Stock).where(Stock.symbol.in_(symbols)))
         stocks = result.scalars().all()
 
-    stock_map = {stock.symbol: stock for stock in stocks}
-    return [
-        {
-            'symbol': symbol,
-            'price': float(stock_map[symbol].last_price or 0.0) if symbol in stock_map else 0.0,
-            'change': float(stock_map[symbol].change or 0.0) if symbol in stock_map else 0.0,
-        }
-        for symbol in symbols
-    ]
+    stock_map = {str(stock.symbol).strip().upper(): stock for stock in stocks}
+    items: List[Dict[str, Any]] = []
+    for symbol in symbols:
+        st = stock_map.get(symbol)
+        meta: Dict[str, Any] = (st.stock_metadata or {}) if st else {}
+        change_pct = float(st.change or 0.0) if st else 0.0
+        price = float(st.last_price or 0.0) if st else 0.0
+        change_abs = float(meta.get('change_abs') or meta.get('change') or 0.0)
+        if change_abs and abs(change_pct) < 1e-9:
+            ref = meta.get('basicPrice') or meta.get('refPrice')
+            try:
+                if ref and float(ref) != 0:
+                    change_pct = round((change_abs / float(ref)) * 100.0, 4)
+            except (TypeError, ValueError):
+                pass
+
+        items.append(
+            {
+                'symbol': symbol,
+                'price': price,
+                'change': change_pct,
+                'change_pct': change_pct,
+                'change_abs': change_abs,
+                'reference_price': meta.get('basicPrice') or meta.get('refPrice') or meta.get('r'),
+                'trading_date': meta.get('trading_date') or meta.get('date'),
+                'volume': float(st.volume or 0.0) if st else 0.0,
+                'quote_time': meta.get('quote_synced_at'),
+                'market_session': session_info,
+            }
+        )
+
+    await _fill_prices_from_historical_db(items)
+
+    if any((it.get('price') or 0) <= 0 for it in items):
+        from app.services.demo_seed import ensure_demo_historical_data
+
+        if await ensure_demo_historical_data():
+            await _fill_prices_from_historical_db(items)
+
+    for it in items:
+        ch = float(it.get('change_pct') or it.get('change') or 0)
+        if ch > 0.05:
+            it['signal'] = 'bull'
+            it['signal_vi'] = 'Tích cực'
+        elif ch < -0.05:
+            it['signal'] = 'bear'
+            it['signal_vi'] = 'Tiêu cực'
+        else:
+            it['signal'] = 'flat'
+            it['signal_vi'] = 'Trung lập'
+
+    return items
 
 
 async def periodic_market_sync() -> None:
@@ -101,4 +350,4 @@ async def periodic_market_sync() -> None:
             await sync_market_snapshot()
         except Exception:
             pass
-        await asyncio.sleep(180)
+        await asyncio.sleep(60)

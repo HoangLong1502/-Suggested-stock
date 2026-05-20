@@ -1,12 +1,13 @@
 """
 Data initialization script for populating sample historical prices.
-Run this after starting the database.
+Run manually: python -m scripts.init_data (from backend dir with PYTHONPATH).
 """
 import asyncio
 from datetime import datetime, timedelta
 import random
 import sys
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 
@@ -16,14 +17,13 @@ from app.core.config import settings
 
 async def init_sample_data():
     """Initialize sample historical price data."""
-    
+
     engine = create_async_engine(str(settings.database_url), echo=False)
     async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # Sample stocks
     watchlist = [
         {'symbol': 'SSI', 'name': 'Sài Gòn Securities', 'exchange': 'HOSE'},
         {'symbol': 'VNM', 'name': 'Vinamilk', 'exchange': 'HOSE'},
@@ -38,46 +38,53 @@ async def init_sample_data():
     ]
 
     async with async_session() as session:
-        # Add stocks
         for stock_info in watchlist:
-            existing = await session.get(Stock, stock_info['symbol'])
-            if not existing:
-                stock = Stock(**stock_info)
-                session.add(stock)
+            sym = stock_info['symbol']
+            res = await session.execute(select(Stock).where(Stock.symbol == sym))
+            existing = res.scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    Stock(
+                        symbol=sym,
+                        name=stock_info['name'],
+                        exchange=stock_info['exchange'],
+                        last_price=0.0,
+                        change=0.0,
+                        volume=0.0,
+                    )
+                )
 
         await session.commit()
 
-        # Add historical price data for last 60 days
+        rng = random.Random(2024)
         now = datetime.utcnow()
-        
+
         for stock_info in watchlist:
             symbol = stock_info['symbol']
-            
-            # Generate 60 days of historical prices
+            base = 18.0 + (sum(ord(c) for c in symbol) % 70)
+            close_p = base
+
             for i in range(60, 0, -1):
                 date = now - timedelta(days=i)
-                
-                # Generate realistic price movement
-                base_price = random.uniform(10, 100)
-                daily_change = random.uniform(-2, 3)  # -2% to +3%
-                
-                open_price = base_price
-                close_price = base_price * (1 + daily_change / 100)
-                high = max(open_price, close_price) * random.uniform(1.00, 1.03)
-                low = min(open_price, close_price) * random.uniform(0.97, 1.00)
-                volume = random.randint(100000, 5000000)
-                
-                historical_price = HistoricalPrice(
-                    stock_symbol=symbol,
-                    date=date,
-                    open_price=round(open_price, 2),
-                    high=round(high, 2),
-                    low=round(low, 2),
-                    close_price=round(close_price, 2),
-                    volume=volume,
-                    metadata={'source': 'sample_data'},
+                drift = rng.uniform(-0.025, 0.03)
+                o = close_p
+                close_p = max(1.0, round(o * (1 + drift), 2))
+                high = max(o, close_p) * rng.uniform(1.0, 1.03)
+                low = min(o, close_p) * rng.uniform(0.97, 1.0)
+                volume = float(rng.randint(100000, 5000000))
+
+                session.add(
+                    HistoricalPrice(
+                        stock_symbol=symbol,
+                        date=date,
+                        open_price=round(o, 2),
+                        high=round(high, 2),
+                        low=round(low, 2),
+                        close_price=close_p,
+                        volume=volume,
+                        data_metadata={'source': 'sample_data'},
+                    )
                 )
-                session.add(historical_price)
 
             await session.commit()
             print(f'✓ Added 60 days of historical data for {symbol}')

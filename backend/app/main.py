@@ -9,7 +9,7 @@ from app.api.v1.agents import router as agent_router
 from app.api.v1.routes import router as market_router
 from app.models.schema import Base
 from app.models.postgres import engine
-from app.services.agent_orchestrator import orchestrator
+from app.services.demo_seed import ensure_demo_historical_data
 from app.services.stock_ingest import periodic_market_sync
 
 app = FastAPI(title='BotTrading AI Stock Platform')
@@ -35,6 +35,7 @@ async def startup_event():
             text("ALTER TABLE historical_prices ADD COLUMN IF NOT EXISTS data_metadata JSON DEFAULT '{}'"
             )
         )
+    await ensure_demo_historical_data()
     _ = asyncio.create_task(periodic_market_sync())
 
 

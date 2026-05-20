@@ -14,7 +14,8 @@ interface ConsensusResult {
   verdict: string;
   confidence: number;
   consensus_strength: number;
-  overall_reasoning: string;
+  overall_reasoning?: string;
+  reasoning?: string;
   agent_votes: {
     buy: number;
     hold: number;
@@ -39,6 +40,15 @@ interface DebateResponse {
   current_price?: number;
 }
 
+function formatAgentConfidencePct(value: number): string {
+  if (value == null || Number.isNaN(value)) {
+    return '—';
+  }
+  // API sends 0–100; older bugs might send 0–1
+  const pct = value <= 1 && value >= 0 ? value * 100 : Math.min(100, value);
+  return `${Math.round(pct)}%`;
+}
+
 export default function AgentDebatePanel({ symbol }: { readonly symbol: string }) {
   const { data, isLoading } = useQuery<DebateResponse>({
     queryKey: ['agentDebate', symbol],
@@ -61,13 +71,17 @@ export default function AgentDebatePanel({ symbol }: { readonly symbol: string }
                 <p className="mt-1 text-2xl font-semibold">{data?.symbol ?? symbol}</p>
               </div>
               <div className="rounded-3xl bg-slate-800 px-4 py-2 text-xs uppercase tracking-[0.18em] text-slate-300">
-                {consensus ? `${consensus.verdict.toUpperCase()} · ${Math.round(consensus.confidence)}%` : 'Chưa có kết luận'}
+                {consensus ? `${consensus.verdict.toUpperCase()} · ${formatAgentConfidencePct(consensus.confidence)}` : 'Chưa có kết luận'}
               </div>
             </div>
             {consensus && (
               <div className="mt-4 text-sm text-slate-300">
                 <p className="font-semibold text-slate-200">Lý do mua của AI</p>
-                <p className="mt-2 text-slate-300">{consensus.overall_reasoning}</p>
+                <p className="mt-2 text-slate-300">
+                  {consensus.overall_reasoning ||
+                    consensus.reasoning ||
+                    'Chưa có tóm tắt đồng thuận — kiểm tra backend / dữ liệu lịch sử giá.'}
+                </p>
                 {buyTiming?.timing && (
                   <p className="mt-3 text-sm text-amber-200">
                     Thời điểm nên mua: <span className="font-semibold">{buyTiming.timing}</span> · {buyTiming.urgency}
@@ -86,7 +100,7 @@ export default function AgentDebatePanel({ symbol }: { readonly symbol: string }
                   <p className="mt-1 text-sm text-slate-300">{item.rationale}</p>
                 </div>
                 <span className="rounded-full bg-slate-800 px-3 py-1 text-xs uppercase tracking-[0.18em] text-slate-300">
-                  {Math.round(item.confidence * 100)}%
+                  {formatAgentConfidencePct(item.confidence)}
                 </span>
               </div>
             </div>

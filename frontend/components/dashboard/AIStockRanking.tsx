@@ -13,6 +13,15 @@ interface StockRanking {
   agents_buy: number;
   agents_sell: number;
   agents_hold: number;
+  when_to_buy?: {
+    summary_vi?: string;
+    timing?: string;
+    urgency?: string;
+    buy_signals?: string[];
+    recommended_entry_price?: number;
+    next_check_hours?: number;
+  };
+  why_this_stock?: string;
   agent_details: Array<{
     agent: string;
     verdict: string;
@@ -22,12 +31,14 @@ interface StockRanking {
 }
 
 interface BestStockData {
-  best_stock: string;
+  best_stock?: string;
+  symbol?: string;
   recommendation: string;
   confidence: number;
   consensus_strength: number;
   reasoning: string;
-  buy_timing: {
+  why_this_stock?: string;
+  buy_timing?: {
     timing: string;
     urgency: string;
     buy_signals?: string[];
@@ -42,6 +53,8 @@ interface BestStockData {
 interface TopStocksData {
   timestamp: string;
   analysis_period_days: number;
+  status?: string;
+  server_message?: string;
   summary: {
     total_analyzed: number;
     high_confidence: number;
@@ -49,7 +62,7 @@ interface TopStocksData {
     hold_signals: number;
     sell_signals: number;
   };
-  best_stock: string;
+  best_stock: string | null;
   buy_recommendations: StockRanking[];
   all_ranked: StockRanking[];
 }
@@ -71,20 +84,39 @@ export default function AIStockRanking() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5 * 60 * 1000); // Refresh every 5 minutes
+    const interval = setInterval(fetchData, 10 * 60 * 1000); // Mỗi phân tích rất nặng — refresh 10 phút
     return () => clearInterval(interval);
   }, [fetchData]);
 
   const fetchTopStocks = async () => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 900_000);
     try {
-      const response = await fetch(`${apiUrl}/agents/top-stocks?limit=10&min_confidence=0.65`, {
+      const response = await fetch(`${apiUrl}/agents/top-stocks?limit=10&min_confidence=0.4`, {
         cache: 'no-store',
+        signal: ctrl.signal,
       });
-      if (!response.ok) throw new Error('Failed to fetch top stocks');
-      const data = await response.json();
+      const text = await response.text();
+      if (!response.ok) {
+        let msg = text.slice(0, 400);
+        try {
+          const j = JSON.parse(text) as { detail?: string; error?: string; message?: string };
+          msg = (typeof j.detail === 'string' && j.detail) || j.error || j.message || msg;
+        } catch {
+          /* keep slice */
+        }
+        throw new Error(msg || `HTTP ${response.status}`);
+      }
+      const data = JSON.parse(text) as TopStocksData;
       setTopStocks(data);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'An error occurred');
+      if (err instanceof Error && err.name === 'AbortError') {
+        setError('Hết thời gian chờ (15 phút). Backend đang phân tích quá lâu — thử Refresh hoặc giảm số mã watchlist.');
+      } else {
+        setError(err instanceof Error ? err.message : 'An error occurred');
+      }
+    } finally {
+      clearTimeout(t);
     }
   };
 
@@ -177,6 +209,12 @@ export default function AIStockRanking() {
         </div>
       )}
 
+      {topStocks?.status === 'degraded' && topStocks.server_message && (
+        <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg text-amber-900 text-sm">
+          Phân tích ranking tạm không chạy xong: {topStocks.server_message}
+        </div>
+      )}
+
       {topStocks && (
         <>
           {/* Summary Stats */}
@@ -223,7 +261,9 @@ export default function AIStockRanking() {
                 <div className="flex-1">
                   <p className="text-sm text-gray-600">🏆 Best AI stock pick hôm nay</p>
                   <h3 className="text-3xl font-bold text-gray-900">
-                    {bestHighlight.best_stock}
+                    {'best_stock' in bestHighlight && bestHighlight.best_stock
+                      ? bestHighlight.best_stock
+                      : bestHighlight.symbol}
                   </h3>
                   <div className="mt-3 flex flex-wrap items-center gap-3">
                     <span className={`badge ${getVerdictBadge(bestHighlight.recommendation)}`}>
@@ -238,7 +278,9 @@ export default function AIStockRanking() {
                   </div>
                   <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
                     <p className="font-semibold text-slate-900">Tại sao AI chọn mã này</p>
-                    <p className="mt-2">{bestHighlight.reasoning}</p>
+                    <p className="mt-2 whitespace-pre-line">
+                      {bestStock?.why_this_stock ?? bestHighlight.reasoning}
+                    </p>
                   </div>
 
                   {bestStock?.buy_timing?.timing && (
@@ -372,6 +414,30 @@ export default function AIStockRanking() {
                         </div>
                       </div>
                     </div>
+
+                    {stock.recommendation === 'buy' && (stock.when_to_buy || stock.why_this_stock) && (
+                      <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-gray-800">
+                        <h5 className="font-semibold text-green-900 mb-2">Thời điểm mua & lý do chọn mã</h5>
+                        {stock.when_to_buy?.summary_vi && (
+                          <p className="mb-2">
+                            <span className="font-medium text-green-800">Khi nào nên mua: </span>
+                            {stock.when_to_buy.summary_vi}
+                          </p>
+                        )}
+                        {stock.when_to_buy?.recommended_entry_price != null && (
+                          <p className="text-xs text-gray-600">
+                            Giá entry tham chiếu (kỹ thuật):{' '}
+                            <span className="font-semibold">{stock.when_to_buy.recommended_entry_price}</span>
+                            {stock.when_to_buy.next_check_hours != null && (
+                              <> — nên xem lại sau ~{stock.when_to_buy.next_check_hours} giờ</>
+                            )}
+                          </p>
+                        )}
+                        {stock.why_this_stock && (
+                          <p className="mt-2 whitespace-pre-line text-gray-700">{stock.why_this_stock}</p>
+                        )}
+                      </div>
+                    )}
 
                     <div>
                       <h5 className="font-semibold text-gray-900 mb-2">Agent Analysis</h5>

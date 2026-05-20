@@ -1,14 +1,15 @@
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from typing import List, Annotated
+from typing import List, Annotated, Any, Dict
 
 from app.models.postgres import AsyncSessionLocal
 from app.models.schema import Stock
-from app.services.stock_ingest import VN_INDEX_SYMBOLS, load_watchlist_items, sync_market_snapshot
+from app.services.stock_ingest import VN_INDEX_SYMBOLS, load_watchlist_items, sync_market_snapshot, vietnam_market_session
 from app.services.agent_orchestrator import orchestrator
 from app.services.recommendation_engine import recommendation_engine
 from app.services.historical_analyzer import historical_analyzer
+from app.services.demo_seed import ensure_demo_historical_data
 from app.services.fundamental_analyzer import fundamental_analyzer
 from app.services.technical_calculator import technical_calculator
 from app.services.stock_ranker import stock_ranker
@@ -19,38 +20,91 @@ router = APIRouter()
 @router.get('/market/overview')
 async def market_overview():
     """Get market overview with indices, watchlist, gainers, losers."""
+    await ensure_demo_historical_data()
     await sync_market_snapshot()
     watchlist_items = await load_watchlist_items()
 
     async with AsyncSessionLocal() as session:
         gainers_result = await session.execute(
-            select(Stock).order_by(Stock.change.desc()).limit(5)
+            select(Stock).order_by(Stock.change.desc()).limit(8)
         )
         losers_result = await session.execute(
-            select(Stock).order_by(Stock.change.asc()).limit(5)
+            select(Stock).order_by(Stock.change.asc()).limit(8)
         )
         indices_result = await session.execute(
             select(Stock).where(Stock.symbol.in_(VN_INDEX_SYMBOLS))
         )
 
-    top_gainers = [
-        {'symbol': stock.symbol, 'change': float(stock.change or 0.0)}
-        for stock in gainers_result.scalars().all()
-    ]
-    top_losers = [
-        {'symbol': stock.symbol, 'change': float(stock.change or 0.0)}
-        for stock in losers_result.scalars().all()
-    ]
+    def _sig(pct: float) -> tuple[str, str]:
+        if pct > 0.05:
+            return 'bull', 'Tích cực'
+        if pct < -0.05:
+            return 'bear', 'Tiêu cực'
+        return 'flat', 'Trung lập'
 
-    stock_map = {stock.symbol: stock for stock in indices_result.scalars().all()}
-    indices = [
-        {
-            'symbol': symbol,
-            'price': float(stock_map[symbol].last_price or 0.0) if symbol in stock_map else 0.0,
-            'change': float(stock_map[symbol].change or 0.0) if symbol in stock_map else 0.0,
-        }
-        for symbol in VN_INDEX_SYMBOLS
-    ]
+    stock_gainers = []
+    for stock in gainers_result.scalars().all():
+        ch = float(stock.change or 0.0)
+        sig, sig_vi = _sig(ch)
+        stock_gainers.append(
+            {
+                'symbol': stock.symbol,
+                'change': ch,
+                'change_pct': ch,
+                'last_close': round(float(stock.last_price or 0.0), 2) if (stock.last_price or 0) > 0 else None,
+                'signal': sig,
+                'signal_vi': sig_vi,
+            }
+        )
+    stock_losers = []
+    for stock in losers_result.scalars().all():
+        ch = float(stock.change or 0.0)
+        sig, sig_vi = _sig(ch)
+        stock_losers.append(
+            {
+                'symbol': stock.symbol,
+                'change': ch,
+                'change_pct': ch,
+                'last_close': round(float(stock.last_price or 0.0), 2) if (stock.last_price or 0) > 0 else None,
+                'signal': sig,
+                'signal_vi': sig_vi,
+            }
+        )
+
+    hg, hl = await historical_analyzer.snapshot_movers_from_db(8)
+    top_gainers = hg if hg else stock_gainers
+    top_losers = hl if hl else stock_losers
+    if not top_gainers or all(abs(float(g.get('change') or 0)) < 1e-6 for g in top_gainers):
+        if hg:
+            top_gainers = hg
+    if not top_losers or all(abs(float(g.get('change') or 0)) < 1e-6 for g in top_losers):
+        if hl:
+            top_losers = hl
+
+    stock_map = {str(stock.symbol).strip().upper(): stock for stock in indices_result.scalars().all()}
+    indices: List[Dict[str, Any]] = []
+    for symbol in VN_INDEX_SYMBOLS:
+        st = stock_map.get(symbol)
+        if st is not None:
+            indices.append(
+                {
+                    'symbol': symbol,
+                    'price': float(st.last_price or 0.0),
+                    'change': float(st.change or 0.0),
+                }
+            )
+        else:
+            indices.append({'symbol': symbol, 'price': 0.0, 'change': 0.0})
+
+    for row in indices:
+        if row['price'] > 0:
+            continue
+        c, pct, _ = await historical_analyzer.last_close_and_day_pct(row['symbol'])
+        if c is not None:
+            row['price'] = float(c)
+            row['change'] = float(pct or 0.0)
+
+    chart_preview = await historical_analyzer.sparkline_series(VN_INDEX_SYMBOLS[0], 7)
 
     return JSONResponse(
         {
@@ -58,10 +112,16 @@ async def market_overview():
             'watchlist': watchlist_items,
             'top_gainers': top_gainers,
             'top_losers': top_losers,
+            'chart_preview': chart_preview,
             'sector_heatmap': [
                 {'sector': 'Banking', 'strength': 0.7},
                 {'sector': 'Real Estate', 'strength': 0.3},
             ],
+            'market_session': vietnam_market_session(),
+            'quote_source': (
+                'Giá watchlist: ưu tiên VNDirect finho; nếu không có thì dùng OHLC trong DB. '
+                'Dữ liệu demo được seed tự động khi DB trống để giao diện và agent hoạt động.'
+            ),
         }
     )
 
@@ -197,6 +257,7 @@ async def get_debate(symbol: str):
                 'verdict': decision.get('verdict', 'hold'),
                 'confidence': round(decision.get('score', 0.0) * 100, 1),
                 'reasoning': decision.get('rationale', ''),
+                'overall_reasoning': decision.get('rationale', ''),
                 'consensus_strength': round(decision.get('extra', {}).get('consensus_strength', 0) * 100, 1),
             },
             'timestamp': agent_results.get('timestamp'),
@@ -285,6 +346,13 @@ async def get_best_stock():
             result['entry_points'] = full_recommendation.get('entry_points', {})
             result['technical_snapshot'] = full_recommendation.get('indicators_snapshot', {})
             result['timestamp'] = full_recommendation.get('timestamp') or result.get('timestamp')
+            bt = full_recommendation.get('buy_timing') or {}
+            sig = '; '.join(bt.get('buy_signals') or []) or 'xem RSI/MACD/khối lượng trong khối buy_timing.'
+            result['why_this_stock'] = (
+                f"{result.get('reasoning', '')}\n\n"
+                f"Tổng hợp sau debate + bối cảnh kỹ thuật 60 ngày: {bt.get('timing', '')} "
+                f"(mức ưu tiên {bt.get('urgency', '')}). Tín hiệu: {sig}"
+            ).strip()
 
         return JSONResponse(result)
     except Exception as e:
@@ -294,7 +362,7 @@ async def get_best_stock():
 @router.get('/agents/top-stocks')
 async def get_top_stocks(
     limit: Annotated[int, Query(ge=1, le=20)] = 5,
-    min_confidence: Annotated[float, Query(ge=0.0, le=1.0)] = 0.65
+    min_confidence: Annotated[float, Query(ge=0.0, le=1.0)] = 0.45
 ):
     """
     🏆 Get ranked list of best stocks based on 2 months AI analysis.
@@ -313,7 +381,29 @@ async def get_top_stocks(
         ranking = await stock_ranker.rank_all_stocks(min_confidence=min_confidence)
         
         if ranking.get('status') == 'error':
-            return JSONResponse(ranking, status_code=500)
+            return JSONResponse(
+                {
+                    'timestamp': ranking.get('timestamp'),
+                    'status': 'degraded',
+                    'server_message': ranking.get('message', 'Ranking failed'),
+                    'analysis_period_days': 60,
+                    'analysis_period_text': '2 months',
+                    'min_confidence_threshold': min_confidence,
+                    'summary': {
+                        'total_analyzed': 0,
+                        'high_confidence': 0,
+                        'buy_signals': 0,
+                        'hold_signals': 0,
+                        'sell_signals': 0,
+                    },
+                    'best_stock': None,
+                    'buy_recommendations': [],
+                    'hold_recommendations': [],
+                    'sell_recommendations': [],
+                    'all_ranked': [],
+                },
+                status_code=200,
+            )
         
         # Limit results
         all_ranked = ranking.get('all_ranked', [])[:limit]
