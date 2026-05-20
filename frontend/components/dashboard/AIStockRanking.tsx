@@ -134,323 +134,312 @@ export default function AIStockRanking() {
   const getRecommendationColor = (recommendation: string) => {
     switch (recommendation.toLowerCase()) {
       case 'buy':
-        return 'bg-green-50 border-green-200';
+        return 'border-emerald-500/25 bg-emerald-950/35 hover:border-emerald-400/40';
       case 'sell':
-        return 'bg-red-50 border-red-200';
+        return 'border-rose-500/25 bg-rose-950/35 hover:border-rose-400/40';
       case 'hold':
-        return 'bg-yellow-50 border-yellow-200';
+        return 'border-amber-500/25 bg-amber-950/25 hover:border-amber-400/35';
       default:
-        return 'bg-gray-50 border-gray-200';
+        return 'border-slate-600/50 bg-slate-900/50 hover:border-slate-500/50';
     }
   };
 
   const getVerdictBadge = (verdict: string) => {
     switch (verdict.toLowerCase()) {
       case 'buy':
-        return 'bg-green-100 text-green-800';
+        return 'bg-emerald-500/15 text-emerald-300 ring-1 ring-emerald-500/30';
       case 'sell':
-        return 'bg-red-100 text-red-800';
+        return 'bg-rose-500/15 text-rose-300 ring-1 ring-rose-500/30';
       case 'hold':
-        return 'bg-yellow-100 text-yellow-800';
+        return 'bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/30';
       default:
-        return 'bg-gray-100 text-gray-800';
+        return 'bg-slate-600/40 text-slate-200 ring-1 ring-white/10';
     }
   };
 
   const getConfidenceColor = (confidence: number) => {
-    if (confidence >= 80) return 'text-green-600';
-    if (confidence >= 65) return 'text-blue-600';
-    if (confidence >= 50) return 'text-yellow-600';
-    return 'text-red-600';
+    if (confidence >= 80) return 'text-emerald-400';
+    if (confidence >= 65) return 'text-sky-400';
+    if (confidence >= 50) return 'text-amber-300';
+    return 'text-rose-400';
   };
 
   const bestHighlight = bestStock || (topStocks?.all_ranked?.[0] as BestStockData | undefined);
 
   if (loading && !topStocks) {
     return (
-      <div className="flex justify-center items-center h-64">
+      <div className="flex h-52 items-center justify-center rounded-2xl border border-violet-500/20 bg-slate-950/60">
         <div className="text-center">
-          <div className="animate-spin mb-4">
-            <Trophy className="w-8 h-8 text-blue-500" />
-          </div>
-          <p className="text-gray-600">Analyzing stocks with AI agents...</p>
+          <Trophy className="mx-auto mb-3 h-9 w-9 animate-pulse text-violet-400" />
+          <p className="text-sm font-medium text-slate-200">Đang phân tích watchlist với AI agents…</p>
         </div>
       </div>
     );
   }
 
+  const bestSymbol =
+    bestHighlight && 'best_stock' in bestHighlight && bestHighlight.best_stock
+      ? bestHighlight.best_stock
+      : bestHighlight?.symbol ?? '';
+
+  const whyText = bestStock?.why_this_stock ?? bestHighlight?.reasoning ?? '';
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-6 rounded-lg">
-        <div className="flex items-center justify-between">
+    <div className="space-y-5 text-slate-200">
+      <div className="relative overflow-hidden rounded-2xl border border-violet-500/25 bg-gradient-to-br from-violet-950/80 via-slate-900 to-slate-950 p-5 ring-1 ring-violet-500/15">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-48 w-48 rounded-full bg-violet-600/20 blur-3xl" />
+        <div className="relative flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-2xl font-bold flex items-center gap-2">
-              <Trophy className="w-6 h-6" />
-              AI Agent Stock Ranking
+            <h2 className="flex items-center gap-2 text-xl font-bold tracking-tight text-white">
+              <Trophy className="h-6 w-6 text-amber-400" />
+              AI ranking & best pick
             </h2>
-            <p className="text-blue-100 mt-2">
-              Based on 60 days (2 months) of comprehensive analysis from 5 AI agents
+            <p className="mt-1.5 max-w-2xl text-base font-normal leading-relaxed text-slate-100">
+              60 ngày dữ liệu, tổng hợp từ nhiều agent — giao diện tối đồng bộ với dashboard.
             </p>
           </div>
           <button
+            type="button"
             onClick={fetchData}
-            className="bg-blue-700 hover:bg-blue-800 px-4 py-2 rounded text-sm"
+            className="shrink-0 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/10"
           >
-            Refresh
+            Làm mới
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="bg-red-50 border border-red-200 p-4 rounded-lg flex items-start gap-3">
-          <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-          <p className="text-red-700">{error}</p>
+        <div className="flex items-start gap-3 rounded-xl border border-rose-500/30 bg-rose-950/40 p-4 text-sm text-rose-100">
+          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-400" />
+          <p>{error}</p>
         </div>
       )}
 
       {topStocks?.status === 'degraded' && topStocks.server_message && (
-        <div className="bg-amber-50 border border-amber-200 p-4 rounded-lg text-amber-900 text-sm">
+        <div className="rounded-xl border border-amber-500/30 bg-amber-950/35 p-4 text-sm text-amber-100">
           Phân tích ranking tạm không chạy xong: {topStocks.server_message}
         </div>
       )}
 
       {topStocks && (
         <>
-          {/* Summary Stats */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <div className="bg-white p-4 rounded-lg border border-gray-200">
-              <p className="text-xs text-gray-600 uppercase">Total Analyzed</p>
-              <p className="text-2xl font-bold text-gray-900">
-                {topStocks.summary.total_analyzed}
-              </p>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+            <div className="rounded-xl border border-white/10 bg-slate-900/60 p-4 ring-1 ring-white/5">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Tổng mã</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-white">{topStocks.summary.total_analyzed}</p>
             </div>
-            <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-              <p className="text-xs text-green-600 uppercase">Buy Signals</p>
-              <p className="text-2xl font-bold text-green-700">
-                {topStocks.summary.buy_signals}
-              </p>
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/30 p-4 ring-1 ring-emerald-500/15">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-200">Mua</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-emerald-300">{topStocks.summary.buy_signals}</p>
             </div>
-            <div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
-              <p className="text-xs text-yellow-600 uppercase">Hold Signals</p>
-              <p className="text-2xl font-bold text-yellow-700">
-                {topStocks.summary.hold_signals}
-              </p>
+            <div className="rounded-xl border border-amber-500/20 bg-amber-950/25 p-4 ring-1 ring-amber-500/15">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-200">Giữ</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-amber-200">{topStocks.summary.hold_signals}</p>
             </div>
-            <div className="bg-red-50 p-4 rounded-lg border border-red-200">
-              <p className="text-xs text-red-600 uppercase">Sell Signals</p>
-              <p className="text-2xl font-bold text-red-700">
-                {topStocks.summary.sell_signals}
-              </p>
+            <div className="rounded-xl border border-rose-500/20 bg-rose-950/30 p-4 ring-1 ring-rose-500/15">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-rose-200">Bán</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-rose-300">{topStocks.summary.sell_signals}</p>
             </div>
-            <div className="bg-purple-50 p-4 rounded-lg border border-purple-200">
-              <p className="text-xs text-purple-600 uppercase">High Confidence</p>
-              <p className="text-2xl font-bold text-purple-700">
-                {topStocks.summary.high_confidence}
-              </p>
+            <div className="col-span-2 rounded-xl border border-violet-500/25 bg-violet-950/30 p-4 ring-1 ring-violet-500/15 md:col-span-1">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-200">Tự tin cao</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-violet-200">{topStocks.summary.high_confidence}</p>
             </div>
           </div>
 
-          {/* Best Stock Highlight */}
           {bestHighlight && (
-            <div className="bg-gradient-to-r from-yellow-50 to-orange-50 border-2 border-yellow-300 p-6 rounded-lg">
-              <div className="flex flex-col gap-4 md:flex-row md:items-start">
-                <div className="bg-yellow-400 text-white rounded-full p-3">
-                  <Target className="w-6 h-6" />
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm text-gray-600">🏆 Best AI stock pick hôm nay</p>
-                  <h3 className="text-3xl font-bold text-gray-900">
-                    {'best_stock' in bestHighlight && bestHighlight.best_stock
-                      ? bestHighlight.best_stock
-                      : bestHighlight.symbol}
-                  </h3>
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <span className={`badge ${getVerdictBadge(bestHighlight.recommendation)}`}>
-                      {bestHighlight.recommendation.toUpperCase()}
-                    </span>
-                    <span className={`text-lg font-bold ${getConfidenceColor(bestHighlight.confidence)}`}>
-                      {bestHighlight.confidence}% Confidence
-                    </span>
-                    <span className="text-gray-600">
-                      Consensus: {bestHighlight.consensus_strength}%
-                    </span>
+            <div className="relative overflow-hidden rounded-2xl border border-amber-500/35 bg-gradient-to-r from-amber-950/50 via-slate-900 to-slate-950 p-5 ring-1 ring-amber-500/20">
+              <div className="pointer-events-none absolute right-0 top-0 h-32 w-32 rounded-full bg-amber-500/10 blur-2xl" />
+              {/* Hàng 1: mã + lý do (không còn cột giá bên phải) */}
+              <div className="relative flex flex-col gap-5 lg:flex-row lg:items-start lg:gap-6">
+                <div className="flex shrink-0 flex-row items-center gap-4">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-amber-400 to-orange-600 text-slate-900 shadow-lg shadow-amber-900/40">
+                    <Target className="h-7 w-7" />
                   </div>
-                  <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-                    <p className="font-semibold text-slate-900">Tại sao AI chọn mã này</p>
-                    <p className="mt-2 whitespace-pre-line">
-                      {bestStock?.why_this_stock ?? bestHighlight.reasoning}
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-amber-50">
+                      Best pick hôm nay
                     </p>
+                    <h3 className="mt-1 font-mono text-3xl font-bold tracking-tight text-white">{bestSymbol}</h3>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className={`rounded-lg px-2.5 py-1 text-xs font-bold ${getVerdictBadge(bestHighlight.recommendation)}`}>
+                        {bestHighlight.recommendation.toUpperCase()}
+                      </span>
+                      <span className={`text-sm font-bold tabular-nums ${getConfidenceColor(bestHighlight.confidence)}`}>
+                        {bestHighlight.confidence}% tin cậy
+                      </span>
+                      <span className="rounded-md bg-white/10 px-2 py-1 text-xs font-medium text-slate-100 ring-1 ring-white/15">
+                        Đồng thuận {bestHighlight.consensus_strength}%
+                      </span>
+                    </div>
                   </div>
+                </div>
 
-                  {bestStock?.buy_timing?.timing && (
-                    <div className="mt-4 rounded-3xl border border-yellow-300 bg-yellow-100 p-4">
-                      <p className="text-sm text-yellow-800 uppercase tracking-[0.24em]">Thời điểm nên mua</p>
-                      <p className="mt-2 text-xl font-semibold text-yellow-900">
-                        {bestStock.buy_timing.timing} · {bestStock.buy_timing.urgency}
-                      </p>
-                      <p className="mt-2 text-sm text-gray-700">
-                        {bestStock.buy_timing.buy_signals?.join(', ') || 'Dựa trên tín hiệu RSI, MACD và khối lượng.'}
-                      </p>
-                    </div>
-                  )}
+                <div className="min-h-0 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Tại sao chọn mã này</p>
+                  <p className="mt-2 text-base leading-relaxed text-slate-100 lg:line-clamp-6">{whyText}</p>
+                </div>
+              </div>
 
-                  {(bestStock?.recommended_entry || bestStock?.current_price) && (
-                    <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                      <div className="rounded-3xl bg-white p-4 text-sm text-slate-700 border border-slate-200">
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Giá hiện tại</p>
-                        <p className="mt-1 text-xl font-semibold text-slate-900">
-                          {bestStock?.current_price?.toFixed(2) ?? 'N/A'}
-                        </p>
-                      </div>
-                      <div className="rounded-3xl bg-white p-4 text-sm text-slate-700 border border-slate-200">
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Entry đề xuất</p>
-                        <p className="mt-1 text-xl font-semibold text-slate-900">
-                          {bestStock?.recommended_entry?.toFixed(2) ?? 'N/A'}
-                        </p>
-                      </div>
-                      <div className="rounded-3xl bg-white p-4 text-sm text-slate-700 border border-slate-200">
-                        <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Kiểm tra lại sau</p>
-                        <p className="mt-1 text-xl font-semibold text-slate-900">
-                          {bestStock?.buy_timing?.next_check_hours ?? 4} giờ
-                        </p>
-                      </div>
-                    </div>
-                  )}
+              {/* Hàng 2: thời điểm / tín hiệu (vùng “đồ thị” nội dung chính) */}
+              {bestStock?.buy_timing?.timing && (
+                <div className="relative mt-4 rounded-xl border border-amber-500/30 bg-amber-950/40 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-100">Thời điểm nên mua</p>
+                  <p className="mt-1 text-base font-semibold text-white">
+                    {bestStock.buy_timing.timing} · {bestStock.buy_timing.urgency}
+                  </p>
+                  <p className="mt-2 text-sm leading-relaxed text-amber-50">
+                    {bestStock.buy_timing.buy_signals?.join(' · ') || 'Dựa trên RSI, MACD và khối lượng.'}
+                  </p>
+                </div>
+              )}
+
+              {/* Hàng 3: giá — entry — xem lại (một hàng ngang ngay dưới khối trên) */}
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Giá hiện tại</p>
+                  <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-white">
+                    {bestStock?.current_price != null ? bestStock.current_price.toFixed(2) : '—'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Entry gợi ý</p>
+                  <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-emerald-300">
+                    {bestStock?.recommended_entry != null ? bestStock.recommended_entry.toFixed(2) : '—'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-amber-500/25 bg-amber-950/40 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-100">Xem lại sau</p>
+                  <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-amber-100">
+                    {bestStock?.buy_timing?.next_check_hours ?? 4} giờ
+                  </p>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Tabs */}
-          <div className="flex gap-2 border-b border-gray-200">
-            <button
-              onClick={() => setSelectedTab('all')}
-              className={`px-4 py-2 font-medium border-b-2 ${
-                selectedTab === 'all'
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              All Stocks
-            </button>
-            <button
-              onClick={() => setSelectedTab('buy')}
-              className={`px-4 py-2 font-medium border-b-2 ${
-                selectedTab === 'buy'
-                  ? 'border-green-600 text-green-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Buy Only
-            </button>
-            <button
-              onClick={() => setSelectedTab('analysis')}
-              className={`px-4 py-2 font-medium border-b-2 ${
-                selectedTab === 'analysis'
-                  ? 'border-purple-600 text-purple-600'
-                  : 'border-transparent text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              Analysis Details
-            </button>
+          <div className="flex flex-wrap gap-1 border-b border-white/10 pb-px">
+            {(
+              [
+                ['all', 'Tất cả', 'violet'],
+                ['buy', 'Chỉ mua', 'emerald'],
+                ['analysis', 'Chi tiết', 'sky'],
+              ] as const
+            ).map(([id, label, hue]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSelectedTab(id)}
+                className={`rounded-t-lg px-4 py-2.5 text-sm font-medium transition ${
+                  selectedTab === id
+                    ? hue === 'violet'
+                      ? 'border-b-2 border-violet-400 text-violet-300'
+                      : hue === 'emerald'
+                        ? 'border-b-2 border-emerald-400 text-emerald-300'
+                        : 'border-b-2 border-sky-400 text-sky-300'
+                    : 'border-b-2 border-transparent text-slate-400 hover:text-slate-100'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
-          {/* Stocks List */}
-          <div className="space-y-3">
+          <div className="space-y-2.5">
             {(selectedTab === 'buy' ? topStocks.buy_recommendations : topStocks.all_ranked).map((stock) => (
               <div
                 key={stock.symbol}
-                className={`border rounded-lg p-4 cursor-pointer transition-all ${
-                  getRecommendationColor(stock.recommendation)
-                } ${expandedStock === stock.symbol ? 'ring-2 ring-blue-400' : ''}`}
-                onClick={() =>
-                  setExpandedStock(expandedStock === stock.symbol ? null : stock.symbol)
-                }
+                role="button"
+                tabIndex={0}
+                className={`cursor-pointer rounded-xl border p-4 transition-all ${getRecommendationColor(stock.recommendation)} ${
+                  expandedStock === stock.symbol ? 'ring-2 ring-violet-400/60' : ''
+                }`}
+                onClick={() => setExpandedStock(expandedStock === stock.symbol ? null : stock.symbol)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setExpandedStock(expandedStock === stock.symbol ? null : stock.symbol);
+                  }
+                }}
               >
-                {/* Collapsed View */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-4 flex-1">
-                    <div>
-                      <h4 className="text-lg font-bold text-gray-900">{stock.symbol}</h4>
-                      <p className="text-sm text-gray-600">{stock.reasoning.substring(0, 100)}...</p>
-                    </div>
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <h4 className="font-mono text-lg font-bold text-white">{stock.symbol}</h4>
+                    <p className="mt-1 line-clamp-2 text-sm leading-relaxed text-slate-200">
+                      {(stock.reasoning ?? '').length > 140 ? `${(stock.reasoning ?? '').slice(0, 140)}…` : stock.reasoning ?? '—'}
+                    </p>
                   </div>
-                  <div className="flex items-center gap-4">
-                    <span className={`badge ${getVerdictBadge(stock.recommendation)}`}>
+                  <div className="flex shrink-0 flex-row flex-wrap items-center gap-3 sm:justify-end">
+                    <span className={`rounded-lg px-2.5 py-1 text-xs font-bold ${getVerdictBadge(stock.recommendation)}`}>
                       {stock.recommendation.toUpperCase()}
                     </span>
                     <div className="text-right">
-                      <p className={`text-lg font-bold ${getConfidenceColor(stock.confidence)}`}>
+                      <p className={`font-mono text-lg font-bold tabular-nums ${getConfidenceColor(stock.confidence)}`}>
                         {stock.confidence}%
                       </p>
-                      <p className="text-xs text-gray-600">
-                        Consensus: {stock.consensus_strength}%
-                      </p>
+                      <p className="text-[11px] font-medium text-slate-300">Đồng thuận {stock.consensus_strength}%</p>
                     </div>
                   </div>
                 </div>
 
-                {/* Expanded View */}
                 {expandedStock === stock.symbol && (
-                  <div className="mt-4 pt-4 border-t border-gray-300 space-y-4">
+                  <div className="mt-4 space-y-4 border-t border-white/10 pt-4">
                     <div>
-                      <h5 className="font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                        <Users className="w-4 h-4" />
-                        Agent Votes
+                      <h5 className="mb-2 flex items-center gap-2 text-sm font-semibold text-white">
+                        <Users className="h-4 w-4 text-violet-400" />
+                        Phiếu bầu agent
                       </h5>
                       <div className="grid grid-cols-3 gap-2">
-                        <div className="bg-green-100 p-2 rounded text-center">
-                          <p className="text-2xl font-bold text-green-700">{stock.agents_buy}</p>
-                          <p className="text-xs text-green-600">Buy</p>
+                        <div className="rounded-lg border border-emerald-500/20 bg-emerald-950/40 p-2 text-center">
+                          <p className="text-2xl font-bold text-emerald-300">{stock.agents_buy}</p>
+                          <p className="text-[10px] uppercase text-emerald-400/80">Mua</p>
                         </div>
-                        <div className="bg-yellow-100 p-2 rounded text-center">
-                          <p className="text-2xl font-bold text-yellow-700">{stock.agents_hold}</p>
-                          <p className="text-xs text-yellow-600">Hold</p>
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-950/35 p-2 text-center">
+                          <p className="text-2xl font-bold text-amber-200">{stock.agents_hold}</p>
+                          <p className="text-[10px] uppercase text-amber-300/80">Giữ</p>
                         </div>
-                        <div className="bg-red-100 p-2 rounded text-center">
-                          <p className="text-2xl font-bold text-red-700">{stock.agents_sell}</p>
-                          <p className="text-xs text-red-600">Sell</p>
+                        <div className="rounded-lg border border-rose-500/20 bg-rose-950/40 p-2 text-center">
+                          <p className="text-2xl font-bold text-rose-300">{stock.agents_sell}</p>
+                          <p className="text-[10px] uppercase text-rose-300/80">Bán</p>
                         </div>
                       </div>
                     </div>
 
                     {stock.recommendation === 'buy' && (stock.when_to_buy || stock.why_this_stock) && (
-                      <div className="rounded-lg border border-green-200 bg-green-50 p-3 text-sm text-gray-800">
-                        <h5 className="font-semibold text-green-900 mb-2">Thời điểm mua & lý do chọn mã</h5>
+                      <div className="rounded-xl border border-emerald-500/25 bg-emerald-950/25 p-3 text-sm text-slate-200">
+                        <h5 className="mb-2 font-semibold text-emerald-200">Thời điểm mua & lý do</h5>
                         {stock.when_to_buy?.summary_vi && (
-                          <p className="mb-2">
-                            <span className="font-medium text-green-800">Khi nào nên mua: </span>
+                          <p className="mb-2 text-slate-100">
+                            <span className="font-medium text-emerald-300">Khi nào nên mua: </span>
                             {stock.when_to_buy.summary_vi}
                           </p>
                         )}
                         {stock.when_to_buy?.recommended_entry_price != null && (
-                          <p className="text-xs text-gray-600">
-                            Giá entry tham chiếu (kỹ thuật):{' '}
-                            <span className="font-semibold">{stock.when_to_buy.recommended_entry_price}</span>
+                          <p className="text-xs leading-relaxed text-slate-200">
+                            Entry tham chiếu:{' '}
+                            <span className="font-mono font-semibold text-white">{stock.when_to_buy.recommended_entry_price}</span>
                             {stock.when_to_buy.next_check_hours != null && (
-                              <> — nên xem lại sau ~{stock.when_to_buy.next_check_hours} giờ</>
+                              <> — xem lại sau ~{stock.when_to_buy.next_check_hours} giờ</>
                             )}
                           </p>
                         )}
                         {stock.why_this_stock && (
-                          <p className="mt-2 whitespace-pre-line text-gray-700">{stock.why_this_stock}</p>
+                          <p className="mt-2 whitespace-pre-line text-slate-100">{stock.why_this_stock}</p>
                         )}
                       </div>
                     )}
 
                     <div>
-                      <h5 className="font-semibold text-gray-900 mb-2">Agent Analysis</h5>
-                      <div className="space-y-2 max-h-64 overflow-y-auto">
+                      <h5 className="mb-2 text-sm font-semibold text-white">Phân tích từng agent</h5>
+                      <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
                         {stock.agent_details.map((agent) => (
-                          <div key={agent.agent} className="bg-white bg-opacity-60 p-2 rounded text-sm">
-                            <div className="flex items-center justify-between mb-1">
-                              <span className="font-semibold text-gray-800">{agent.agent}</span>
-                              <span className={`badge ${getVerdictBadge(agent.verdict)}`}>
+                          <div key={agent.agent} className="rounded-lg border border-white/10 bg-black/25 p-3 text-sm">
+                            <div className="mb-1 flex items-center justify-between gap-2">
+                              <span className="font-medium text-slate-200">{agent.agent}</span>
+                              <span className={`rounded px-2 py-0.5 text-[10px] font-bold ${getVerdictBadge(agent.verdict)}`}>
                                 {agent.verdict.toUpperCase()}
                               </span>
                             </div>
-                            <p className="text-xs text-gray-700">{agent.rationale}</p>
+                            <p className="text-xs leading-relaxed text-slate-200">{agent.rationale}</p>
                           </div>
                         ))}
                       </div>
@@ -461,9 +450,8 @@ export default function AIStockRanking() {
             ))}
           </div>
 
-          {/* Last Updated */}
-          <p className="text-xs text-gray-500 text-center">
-            Last updated: {new Date(topStocks.timestamp).toLocaleString()}
+          <p className="text-center text-xs font-medium text-slate-300">
+            Cập nhật: {new Date(topStocks.timestamp).toLocaleString('vi-VN')}
           </p>
         </>
       )}

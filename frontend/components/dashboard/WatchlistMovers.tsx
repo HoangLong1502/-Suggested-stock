@@ -10,6 +10,12 @@ export type WatchRow = {
   signal_vi?: string;
   volume?: number;
   quote_source_note?: string;
+  market_session?: {
+    label_vi?: string;
+    phase?: string;
+    is_trading_hours?: boolean;
+    is_trading_day?: boolean;
+  };
 };
 
 export type MoverRow = {
@@ -34,17 +40,57 @@ function SignalIcon({ signal }: { readonly signal?: string }) {
   return <Minus className="h-4 w-4 text-slate-500" aria-hidden />;
 }
 
+/** Nhãn giá theo phiên VN — sau giờ / cuối tuần nhấn mạnh giá đóng cửa gần nhất. */
+function priceContextForRow(
+  item: WatchRow,
+  global: { phase?: string; isTradingHours?: boolean; isTradingDay?: boolean },
+): { badge: string; hint: string } {
+  const phase = item.market_session?.phase ?? global.phase;
+  const hours = item.market_session?.is_trading_hours ?? global.isTradingHours;
+  const day = item.market_session?.is_trading_day ?? global.isTradingDay;
+
+  if (phase === 'weekend' || day === false) {
+    return {
+      badge: 'Đóng cửa',
+      hint: 'Cuối tuần — hiển thị giá đóng cửa phiên giao dịch gần nhất trong hệ thống.',
+    };
+  }
+  if (phase === 'after_close') {
+    return {
+      badge: 'Đóng phiên',
+      hint: 'Đã hết giờ HOSE/HNX — mức hiển thị là giá đóng cửa / tham chiếu cuối phiên từ nguồn dữ liệu.',
+    };
+  }
+  if (hours && (phase === 'morning' || phase === 'afternoon')) {
+    return {
+      badge: 'Trong phiên',
+      hint: 'Đang trong giờ khớp lệnh — giá có thể thay đổi theo thị trường.',
+    };
+  }
+  return {
+    badge: 'Tham chiếu',
+    hint: 'Trước giờ mở cửa hoặc nghỉ trưa — mức tham chiếu / đóng gần nhất.',
+  };
+}
+
 export default function WatchlistMovers({
   watchlist,
   topGainers,
   topLosers,
   sessionLabel,
+  sessionPhase,
+  isTradingHours,
+  isTradingDay,
 }: {
   readonly watchlist: ReadonlyArray<WatchRow>;
   readonly topGainers: ReadonlyArray<MoverRow>;
   readonly topLosers: ReadonlyArray<MoverRow>;
   readonly sessionLabel?: string;
+  readonly sessionPhase?: string;
+  readonly isTradingHours?: boolean;
+  readonly isTradingDay?: boolean;
 }) {
+  const sessionGlobal = { phase: sessionPhase, isTradingHours, isTradingDay };
   return (
     <div className="space-y-8">
       <section>
@@ -53,7 +99,8 @@ export default function WatchlistMovers({
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-300/90">Watchlist</p>
             <h2 className="mt-1 text-2xl font-bold tracking-tight text-white">Danh mã theo dõi</h2>
             <p className="mt-1 max-w-md text-sm text-slate-400">
-              Giá đóng / tham chiếu và % thay đổi so với phiên gần nhất trong hệ thống.
+              Sau khi hết phiên, bảng hiển thị <span className="text-slate-200">giá đóng cửa / tham chiếu cuối</span> và % so
+              với phiên liền trước. Trong giờ giao dịch, giá phản ánh bản ghi mới nhất từ nguồn.
             </p>
           </div>
           {sessionLabel ? (
@@ -67,6 +114,7 @@ export default function WatchlistMovers({
           {watchlist.map((item) => {
             const p = pct(item);
             const up = p >= 0;
+            const ctx = priceContextForRow(item, sessionGlobal);
             return (
               <div
                 key={item.symbol}
@@ -74,9 +122,23 @@ export default function WatchlistMovers({
               >
                 <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-violet-600/10 blur-2xl" />
                 <div className="relative flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-mono text-lg font-bold tracking-wide text-white">{item.symbol}</p>
-                    <p className="mt-1 font-mono text-2xl font-semibold text-slate-100">
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="font-mono text-lg font-bold tracking-wide text-white">{item.symbol}</p>
+                      <span
+                        className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                          ctx.badge === 'Trong phiên'
+                            ? 'bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/30'
+                            : ctx.badge === 'Đóng phiên' || ctx.badge === 'Đóng cửa'
+                              ? 'bg-amber-500/15 text-amber-100 ring-1 ring-amber-400/25'
+                              : 'bg-slate-600/40 text-slate-200 ring-1 ring-white/10'
+                        }`}
+                      >
+                        {ctx.badge}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{ctx.hint}</p>
+                    <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-slate-100">
                       {(item.price ?? 0).toLocaleString('vi-VN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
                     {item.trading_date ? (

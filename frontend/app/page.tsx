@@ -15,7 +15,12 @@ type WatchlistRow = {
   signal_vi?: string;
   volume?: number;
   quote_source_note?: string;
-  market_session?: { label_vi?: string; phase?: string; is_trading_hours?: boolean };
+  market_session?: {
+    label_vi?: string;
+    phase?: string;
+    is_trading_hours?: boolean;
+    is_trading_day?: boolean;
+  };
 };
 
 type DashboardData = {
@@ -42,7 +47,7 @@ type DashboardData = {
     signal_vi?: string;
   }>;
   sector_heatmap: Array<{ sector: string; strength: number }>;
-  market_session?: { label_vi?: string; phase?: string };
+  market_session?: { label_vi?: string; phase?: string; is_trading_hours?: boolean; is_trading_day?: boolean };
   chart_preview?: Array<{ name: string; value: number }>;
 };
 
@@ -50,8 +55,8 @@ export default async function Home() {
   const data = (await getDashboardData()) as DashboardData;
   const watchlist = data.watchlist.map((item) =>
     typeof item === 'string'
-      ? { symbol: item, price: 0, change: 0 }
-      : item,
+      ? { symbol: item, price: 0, change: 0, market_session: data.market_session }
+      : { ...item, market_session: item.market_session ?? data.market_session },
   );
   /** Không gọi /agents/suggest ở SSR — endpoint đó chạy nhiều agent/ mã, dễ làm tab quay vòng vài phút. */
   const suggestedSymbol = watchlist[0]?.symbol ?? 'SSI';
@@ -69,44 +74,50 @@ export default async function Home() {
         </div>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-[1.8fr_1fr]">
-        <div className="space-y-5">
-          <section className="section-card">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Market Overview</p>
-                <h2 className="text-2xl font-semibold">VNINDEX & Market pulse</h2>
+      <div className="space-y-5">
+        <div className="grid gap-5 lg:grid-cols-[1.8fr_1fr]">
+          <div className="space-y-5">
+            <section className="section-card">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Market Overview</p>
+                  <h2 className="text-2xl font-semibold">VNINDEX & Market pulse</h2>
+                </div>
+                <ArrowUpRight className="h-5 w-5 text-slate-300" />
               </div>
-              <ArrowUpRight className="h-5 w-5 text-slate-300" />
-            </div>
-            <MarketOverview overview={data} />
-          </section>
+              <MarketOverview overview={data} />
+            </section>
 
-          <section className="section-card">
-            <div className="mb-4 flex items-center justify-between">
-              <div>
-                <p className="text-sm uppercase tracking-[0.24em] text-slate-400">AI Debate Room</p>
-                <h2 className="text-2xl font-semibold">Agent recommendation chain</h2>
+            <section className="section-card">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <p className="text-sm uppercase tracking-[0.24em] text-slate-400">AI Debate Room</p>
+                  <h2 className="text-2xl font-semibold">Agent recommendation chain</h2>
+                </div>
+                <TrendingUp className="h-5 w-5 text-slate-300" />
               </div>
-              <TrendingUp className="h-5 w-5 text-slate-300" />
-            </div>
-            <AgentDebatePanel symbol={suggestedSymbol} />
-          </section>
+              <AgentDebatePanel symbol={suggestedSymbol} />
+            </section>
+          </div>
+
+          <aside className="space-y-5">
+            <section className="section-card">
+              <WatchlistMovers
+                watchlist={watchlist as WatchlistRow[]}
+                topGainers={data.top_gainers ?? []}
+                topLosers={data.top_losers ?? []}
+                sessionLabel={data.market_session?.label_vi}
+                sessionPhase={data.market_session?.phase}
+                isTradingHours={data.market_session?.is_trading_hours}
+                isTradingDay={data.market_session?.is_trading_day}
+              />
+            </section>
+          </aside>
         </div>
 
-        <aside className="space-y-5">
-          <section className="section-card">
-            <WatchlistMovers
-              watchlist={watchlist as WatchlistRow[]}
-              topGainers={data.top_gainers ?? []}
-              topLosers={data.top_losers ?? []}
-              sessionLabel={data.market_session?.label_vi}
-            />
-          </section>
-
+        <section className="section-card w-full">
           <AIStockRanking />
-
-        </aside>
+        </section>
       </div>
     </main>
   );
