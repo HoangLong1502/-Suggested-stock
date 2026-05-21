@@ -6,11 +6,12 @@ Nền tảng phân tích cổ phiếu Việt Nam: dashboard thị trường, wat
 
 | Khu vực | Mô tả |
 |--------|--------|
-| **Market overview** | VNINDEX / HNX / UPCOM, biểu đồ preview, sector heatmap |
-| **Watchlist** | Giá & % theo phiên; sau giờ đóng cửa hiển thị **giá đóng / tham chiếu** cuối; badge trạng thái phiên |
-| **Top movers** | Top tăng / giảm từ DB hoặc quote (VNDirect finho + OHLC fallback) |
+| **Market overview** | VNINDEX / HNX / UPCOM, watchlist, top movers, biểu đồ preview; `?fast=true` đọc DB nhanh (cache ~25s) |
+| **Phân tích ngành** | Trang `/sectors` — 10 nhóm VN (ngân hàng, BĐS, công nghệ…), % TB từ OHLC DB, mã dẫn dắt |
+| **Watchlist** | Giá & % theo phiên (2 nến đóng gần nhất); badge trạng thái phiên |
+| **Top movers** | Top tăng / giảm từ DB (batch OHLC, không quét full DB) |
 | **AI Debate** | Nhiều agent bàn luận theo mã (HOLD / BUY / SELL, % = độ tin cậy) |
-| **AI ranking** | Best pick, thống kê tín hiệu, danh sách xếp hạng; entry / thời điểm mua (khi API trả đủ) |
+| **AI ranking** | Best pick, top stocks; entry / thời điểm mua; cache ranking; lỗi trả **degraded** (200) thay vì 500 |
 
 Dữ liệu: ưu tiên **VNDirect finho**; nếu thiếu thì **OHLC trong PostgreSQL**; DB trống có thể **seed demo** để UI và agent hoạt động offline.
 
@@ -29,7 +30,7 @@ Dữ liệu: ưu tiên **VNDirect finho**; nếu thiếu thì **OHLC trong Postg
 - **Frontend:** Next.js 14, TypeScript, Tailwind CSS, Recharts, React Query, Zustand  
 - **Backend:** FastAPI, SQLAlchemy (async), Celery worker (tùy cấu hình)  
 - **AI:** orchestrator + ranking (`stock_ranker`, `agent_orchestrator`, `recommendation_engine`)  
-- **Dữ liệu:** `stock_ingest`, `historical_analyzer`, `technical_calculator`, `fundamental_analyzer`
+- **Dữ liệu:** `stock_ingest`, `historical_analyzer`, `technical_calculator`, `fundamental_analyzer`, `sector_analyzer`
 
 Chi tiết kiến trúc agent: [ARCHITECTURE.md](./ARCHITECTURE.md) · Hướng dẫn agent: [AI_AGENTS_GUIDE.md](./AI_AGENTS_GUIDE.md) · Ranking API: [AI_STOCK_RANKING_README.md](./AI_STOCK_RANKING_README.md) · Quick start ranking: [QUICK_START_AI_RANKING.md](./QUICK_START_AI_RANKING.md)
 
@@ -54,6 +55,7 @@ Lần đầu container **frontend** chạy `npm install` (volume `node_modules` 
 | Dịch vụ | URL |
 |---------|-----|
 | **Giao diện** | http://localhost:3000 |
+| **Phân tích ngành** | http://localhost:3000/sectors |
 | **API** | http://localhost:5555/api/v1 |
 | **Swagger** | http://localhost:5555/docs |
 | PostgreSQL | `localhost:5432` (user/pass/db: `bottrader` / `bottrader` / `bottrading`) |
@@ -92,22 +94,28 @@ OLLAMA_URL=http://host.docker.internal:11434
 ## API tiêu biểu
 
 ```http
-GET  /api/v1/market/overview          # indices, watchlist, gainers/losers, chart_preview
-GET  /api/v1/stock/{symbol}           # phân tích lịch sử + fundamental + technical
-GET  /api/v1/agents/debate/{symbol}   # tranh luận đa agent
-GET  /api/v1/agents/best-stock        # mã AI chọn (có thể chạy lâu)
-GET  /api/v1/agents/top-stocks        # xếp hạng watchlist (?limit=10&min_confidence=0.4)
-GET  /api/v1/agents/suggest           # gợi ý mã (nặng — không gọi SSR dashboard)
+GET  /api/v1/market/overview?fast=true   # overview nhanh (cache ~25s, không sync VNDirect mỗi request)
+GET  /api/v1/market/sectors?fast=true    # phân tích 10 ngành từ OHLC DB (cache ~120s; fast=bỏ finfo)
+GET  /api/v1/stock/{symbol}              # phân tích lịch sử + fundamental + technical
+GET  /api/v1/agents/debate/{symbol}      # tranh luận đa agent
+GET  /api/v1/agents/best-stock           # mã AI chọn + buy_timing (cache ~10 phút; có thể vài phút lần đầu)
+GET  /api/v1/agents/top-stocks           # xếp hạng (?limit=10&min_confidence=0.4; dùng chung cache ranking)
+GET  /api/v1/agents/suggest              # gợi ý mã (nặng — không gọi SSR dashboard)
 ```
 
-Phân tích ranking / best-stock có thể **vài phút** tùy số mã và Ollama.
+| Endpoint | Thời gian gợi ý | Ghi chú |
+|----------|------------------|---------|
+| `market/overview?fast=true` | &lt; 1s (cache) | Sync giá nền qua `periodic_market_sync` |
+| `market/sectors?fast=true` | &lt; 1s (cache) | `fast=false` gọi thêm VNDirect finfo (chậm hơn) |
+| `agents/best-stock` | 2–5 phút (lần đầu) | Tối đa 10 mã watchlist; lần sau dùng cache |
+| `agents/top-stocks` | như ranking | Lỗi ranking → JSON `status: degraded`, HTTP 200 |
 
 ## Cấu trúc thư mục
 
 ```
 Bot_Trading/
 ├── backend/          # FastAPI, services, models, scripts/init_data.py
-├── frontend/         # Next.js app, components/dashboard, lib/api.ts
+├── frontend/         # Next.js: dashboard, sectors, lib/api.ts, AppNavbar
 ├── docker-compose.yml
 ├── ARCHITECTURE.md
 ├── AI_AGENTS_GUIDE.md
@@ -132,11 +140,11 @@ uvicorn app.main:app --reload --port 8000
 ```powershell
 cd frontend
 npm install
-$env:NEXT_PUBLIC_API_URL="http://localhost:8000/api/v1"
+$env:NEXT_PUBLIC_API_URL="http://localhost:8000/api/v1"   # hoặc 5555 nếu backend map cổng Docker
 npm run dev
 ```
 
-Mở http://localhost:3000 (Next mặc định port 3000).
+Mở http://localhost:3000 (Next mặc định port 3000). Trang ngành: http://localhost:3000/sectors
 
 ## Xử lý sự cố
 
@@ -148,13 +156,24 @@ Mở http://localhost:3000 (Next mặc định port 3000).
 
 ### Watchlist / % = 0
 
-- Đợi backend sync (`stock_ingest`) hoặc seed: DB trống sẽ tự seed OHLC demo lúc startup.  
-- Kiểm tra http://localhost:5555/api/v1/market/overview
+- Đợi backend sync (`stock_ingest`) hoặc seed: DB trống sẽ tự seed OHLC demo lúc startup (gồm mã đại diện các ngành).  
+- Kiểm tra http://localhost:5555/api/v1/market/overview?fast=true
+
+### Không tải được dữ liệu ngành (`/sectors`)
+
+- Backend phải phản hồi: http://localhost:5555/api/v1/market/sectors?fast=true  
+- Nếu API treo: `docker compose restart backend` (tránh reload khi đang chạy ranking AI lâu).  
+- Frontend timeout 60s; dùng luôn `fast=true` (chỉ DB, không chờ finfo).
 
 ### AI ranking / best-stock treo hoặc timeout
 
-- Endpoint nặng; UI timeout ~15 phút. Giảm mã watchlist hoặc bật Ollama ổn định.  
-- Tab **degraded** vẫn có thể hiện thông báo từ server khi ranking không chạy xong.
+- Endpoint nặng (5 agent × tối đa 10 mã); lần đầu **2–5 phút**, lần sau cache ~10 phút.  
+- UI timeout ranking ~15 phút; `best-stock` / `top-stocks` trả **degraded** (HTTP 200, `best_stock: null`) khi lỗi thay vì 500.  
+- Giảm số mã watchlist hoặc bật Ollama ổn định (`OLLAMA_URL` đúng trong Docker).
+
+### Backend không trả lời sau khi sửa code
+
+- Uvicorn `--reload` có thể chờ task nền (ranking AI). `docker compose restart backend` để thoát trạng thái kẹt.
 
 ### Cổng 3000 bận
 

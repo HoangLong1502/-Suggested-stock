@@ -9,8 +9,8 @@ from app.api.v1.agents import router as agent_router
 from app.api.v1.routes import router as market_router
 from app.models.schema import Base
 from app.models.postgres import engine
-from app.services.demo_seed import ensure_demo_historical_data
-from app.services.stock_ingest import periodic_market_sync
+from app.services.demo_seed import ensure_demo_historical_data, ensure_watchlist_historical_gaps
+from app.services.stock_ingest import ensure_default_watchlist, periodic_market_sync
 
 app = FastAPI(title='BotTrading AI Stock Platform')
 
@@ -36,6 +36,8 @@ async def startup_event():
             )
         )
     await ensure_demo_historical_data()
+    await ensure_watchlist_historical_gaps()
+    await ensure_default_watchlist()
 
     async def _bootstrap_sync() -> None:
         await asyncio.sleep(1)

@@ -12,7 +12,36 @@ from app.models.postgres import AsyncSessionLocal
 
 
 VN_INDEX_SYMBOLS = ['VNINDEX', 'HNX', 'UPCOM']
-DEFAULT_WATCHLIST = ['SSI', 'VNM', 'VCB', 'FPT', 'MWG', 'VHM', 'PNJ', 'HPG', 'TPB', 'ACB', 'BVH', 'MSN', 'NVL', 'GAS']
+
+# Mã thanh khoản VN — ngân hàng, CK, BĐS, bluechip (dedupe khi load)
+DEFAULT_WATCHLIST: List[str] = list(
+    dict.fromkeys(
+        [
+            # Chứng khoán
+            'SSI', 'VCI', 'VND', 'SHS', 'HCM', 'BSI', 'FTS', 'VIX', 'APG',
+            # Ngân hàng
+            'VCB', 'TCB', 'BID', 'CTG', 'MBB', 'ACB', 'TPB', 'VPB', 'STB', 'HDB', 'LPB', 'EIB', 'MSB', 'SHB', 'OCB', 'VIB', 'NVB',
+            # Bất động sản
+            'VHM', 'VIC', 'NVL', 'KDH', 'DXG', 'NLG', 'PDR', 'CEO', 'HDG', 'DIG', 'VRE', 'BCM', 'SCR', 'IJC', 'NTL',
+            # Công nghệ
+            'FPT', 'CMG', 'FOX', 'ELC', 'SGT',
+            # Dầu khí & năng lượng
+            'GAS', 'PLX', 'PVD', 'PVS', 'OIL', 'BSR', 'PVC', 'POW', 'GEG', 'PC1',
+            # Bán lẻ & tiêu dùng
+            'MWG', 'FRT', 'VNM', 'MSN', 'SAB', 'BHN', 'KDC', 'PNJ', 'MCH', 'QNS', 'VHC', 'ANV', 'VJC',
+            # Thép & xây dựng
+            'HPG', 'HSG', 'NKG', 'CTD', 'VCG', 'HHV', 'CII', 'HBC', 'LCG',
+            # Bảo hiểm
+            'BVH', 'PVI', 'MIG', 'BMI',
+            # Điện & công nghiệp
+            'REE', 'GEX', 'VGC', 'GVR', 'DCM', 'DPM', 'CSV',
+            # Vận tải & logistics
+            'GMD', 'VSC', 'VTP', 'HAH', 'SCS', 'VOS', 'PVT',
+            # Khác (bluechip / VN30 hay giao dịch)
+            'DHG', 'FMC', 'IDC', 'KBC', 'IMP', 'DGC', 'VPI', 'SZC', 'STK', 'VGS', 'HAX', 'DGW', 'CTR',
+        ]
+    )
+)
 
 FINFO_STOCK_PRICES = 'https://finfo-api.vndirect.com.vn/v4/stock_prices'
 
@@ -236,6 +265,22 @@ async def sync_market_snapshot() -> None:
     _last_sync_monotonic = time_module.monotonic()
 
 
+async def ensure_default_watchlist() -> None:
+    """Ghi/merge watchlist mặc định vào DB để UI luôn có đủ mã thanh khoản."""
+    target = list(DEFAULT_WATCHLIST)
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(Watchlist).order_by(Watchlist.created_at.desc()).limit(1))
+        wl = res.scalar_one_or_none()
+        if wl is None:
+            session.add(Watchlist(user_id='default', symbols=target))
+        else:
+            existing = wl.symbols if isinstance(wl.symbols, list) else []
+            cleaned_existing = [str(s).strip().upper() for s in existing if s and str(s).strip()]
+            merged = list(dict.fromkeys([*cleaned_existing, *target]))
+            wl.symbols = merged
+        await session.commit()
+
+
 async def load_watchlist_symbols() -> List[str]:
     async with AsyncSessionLocal() as session:
         watchlist_result = await session.execute(
@@ -248,10 +293,7 @@ async def load_watchlist_symbols() -> List[str]:
             if cleaned:
                 return cleaned
 
-        legacy_result = await session.execute(select(Stock).limit(20))
-        stocks = legacy_result.scalars().all()
-        symbols = [str(s.symbol).strip().upper() for s in stocks if s.symbol]
-        return symbols if symbols else list(DEFAULT_WATCHLIST)
+    return list(DEFAULT_WATCHLIST)
 
 
 async def batch_ohlc_day_pct(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
