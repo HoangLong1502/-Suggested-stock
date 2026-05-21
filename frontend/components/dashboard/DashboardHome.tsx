@@ -111,10 +111,16 @@ function MarketSkeleton() {
 
 function WatchlistSkeleton() {
   return (
-    <div className="animate-pulse grid gap-3 sm:grid-cols-2">
-      {[1, 2, 3, 4].map((i) => (
-        <div key={i} className="h-28 rounded-2xl bg-slate-800/80" />
-      ))}
+    <div className="animate-pulse space-y-8">
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-5">
+        {[1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+          <div key={i} className="h-28 rounded-2xl bg-slate-800/80" />
+        ))}
+      </div>
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div className="h-48 rounded-2xl bg-slate-800/60" />
+        <div className="h-48 rounded-2xl bg-slate-800/60" />
+      </div>
     </div>
   );
 }
@@ -186,49 +192,43 @@ export default function DashboardHome() {
       ) : null}
 
       <div className="space-y-5">
-        <div className="grid gap-5 lg:grid-cols-[1.8fr_1fr]">
-          <div className="space-y-5">
-            <section className="section-card">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Market Overview</p>
-                  <h2 className="text-2xl font-semibold">VNINDEX & Market pulse</h2>
-                </div>
-                <ArrowUpRight className="h-5 w-5 text-slate-300" />
-              </div>
-              {loading || !data ? <MarketSkeleton /> : <MarketOverview overview={data} />}
-            </section>
-
-            <section className="section-card">
-              <div className="mb-4 flex items-center justify-between">
-                <div>
-                  <p className="text-sm uppercase tracking-[0.24em] text-slate-400">AI Debate Room</p>
-                  <h2 className="text-2xl font-semibold">Agent recommendation chain</h2>
-                </div>
-                <TrendingUp className="h-5 w-5 text-slate-300" />
-              </div>
-              <AgentDebatePanel symbol={suggestedSymbol} />
-            </section>
+        <section className="section-card w-full">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm uppercase tracking-[0.24em] text-slate-400">Market Overview</p>
+              <h2 className="text-2xl font-semibold">VNINDEX & Market pulse</h2>
+            </div>
+            <ArrowUpRight className="h-5 w-5 text-slate-300" />
           </div>
+          {loading || !data ? <MarketSkeleton /> : <MarketOverview overview={data} />}
+        </section>
 
-          <aside className="space-y-5">
-            <section className="section-card">
-              {loading || !data ? (
-                <WatchlistSkeleton />
-              ) : (
-                <WatchlistMovers
-                  watchlist={watchlist as WatchlistRow[]}
-                  topGainers={data.top_gainers ?? []}
-                  topLosers={data.top_losers ?? []}
-                  sessionLabel={session?.label_vi}
-                  sessionPhase={session?.phase}
-                  isTradingHours={session?.is_trading_hours}
-                  isTradingDay={session?.is_trading_day}
-                />
-              )}
-            </section>
-          </aside>
-        </div>
+        <section className="section-card w-full">
+          {loading || !data ? (
+            <WatchlistSkeleton />
+          ) : (
+            <WatchlistMovers
+              watchlist={watchlist as WatchlistRow[]}
+              topGainers={data.top_gainers ?? []}
+              topLosers={data.top_losers ?? []}
+              sessionLabel={session?.label_vi}
+              sessionPhase={session?.phase}
+              isTradingHours={session?.is_trading_hours}
+              isTradingDay={session?.is_trading_day}
+            />
+          )}
+        </section>
+
+        <section className="section-card w-full">
+          <div className="mb-4 flex items-center justify-between">
+            <div>
+              <p className="text-sm uppercase tracking-[0.24em] text-slate-400">AI Debate Room</p>
+              <h2 className="text-2xl font-semibold">Agent recommendation chain</h2>
+            </div>
+            <TrendingUp className="h-5 w-5 text-slate-300" />
+          </div>
+          <AgentDebatePanel symbol={suggestedSymbol} />
+        </section>
 
         <section className="section-card w-full">
           <AIStockRanking />
