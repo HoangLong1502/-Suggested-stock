@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timedelta, time
+import time as time_module
+from datetime import datetime, timedelta, time as dt_time
 from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
@@ -14,6 +15,10 @@ VN_INDEX_SYMBOLS = ['VNINDEX', 'HNX', 'UPCOM']
 DEFAULT_WATCHLIST = ['SSI', 'VNM', 'VCB', 'FPT', 'MWG', 'VHM', 'PNJ', 'HPG', 'TPB', 'ACB', 'BVH', 'MSN', 'NVL', 'GAS']
 
 FINFO_STOCK_PRICES = 'https://finfo-api.vndirect.com.vn/v4/stock_prices'
+
+_last_sync_monotonic: float = 0.0
+_sync_lock = asyncio.Lock()
+SYNC_TTL_SECONDS = 120
 
 
 def vietnam_market_session(now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -35,8 +40,8 @@ def vietnam_market_session(now: Optional[datetime] = None) -> Dict[str, Any]:
         }
 
     t = now.time()
-    morning_open, morning_close = time(9, 0), time(11, 30)
-    afternoon_open, afternoon_close = time(13, 0), time(15, 0)
+    morning_open, morning_close = dt_time(9, 0), dt_time(11, 30)
+    afternoon_open, afternoon_close = dt_time(13, 0), dt_time(15, 0)
 
     if t < morning_open:
         phase = 'pre_open'
@@ -181,6 +186,21 @@ async def _fetch_symbol_safe(
             return symbol, None
 
 
+async def sync_market_snapshot_if_stale(ttl_seconds: int = SYNC_TTL_SECONDS) -> bool:
+    """Chạy sync VNDirect tối đa mỗi ttl_seconds — tránh overview/SSR chờ hàng chục giây."""
+    global _last_sync_monotonic
+    now = time_module.monotonic()
+    if now - _last_sync_monotonic < ttl_seconds:
+        return False
+    async with _sync_lock:
+        now = time_module.monotonic()
+        if now - _last_sync_monotonic < ttl_seconds:
+            return False
+        await sync_market_snapshot()
+        _last_sync_monotonic = time_module.monotonic()
+    return True
+
+
 async def sync_market_snapshot() -> None:
     """
     Refresh prices for indices + watchlist + default liquid names.
@@ -212,6 +232,8 @@ async def sync_market_snapshot() -> None:
             else:
                 session.add(Stock(symbol=code, **payload))
         await session.commit()
+    global _last_sync_monotonic
+    _last_sync_monotonic = time_module.monotonic()
 
 
 async def load_watchlist_symbols() -> List[str]:
@@ -232,52 +254,79 @@ async def load_watchlist_symbols() -> List[str]:
         return symbols if symbols else list(DEFAULT_WATCHLIST)
 
 
+async def batch_ohlc_day_pct(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Hai nến đóng gần nhất / mã — một query, dùng cho watchlist & movers."""
+    syms = [str(s).strip().upper() for s in symbols if s]
+    if not syms:
+        return {}
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(
+            select(
+                HistoricalPrice.stock_symbol,
+                HistoricalPrice.close_price,
+                HistoricalPrice.date,
+            )
+            .where(HistoricalPrice.stock_symbol.in_(syms))
+            .order_by(HistoricalPrice.stock_symbol, desc(HistoricalPrice.date)),
+        )
+        rows = res.all()
+
+    grouped: Dict[str, List[Tuple[float, Any]]] = {}
+    for sym, close, dt in rows:
+        key = str(sym).strip().upper()
+        if key not in grouped:
+            grouped[key] = []
+        if len(grouped[key]) < 2:
+            grouped[key].append((float(close), dt))
+
+    out: Dict[str, Dict[str, Any]] = {}
+    for sym, bars in grouped.items():
+        c0, d0 = bars[0]
+        date_s = d0.isoformat()[:10] if hasattr(d0, 'isoformat') else str(d0)[:10]
+        if len(bars) < 2:
+            out[sym] = {
+                'close': c0,
+                'prev_close': None,
+                'pct': 0.0,
+                'trading_date': date_s,
+            }
+            continue
+        c1, _ = bars[1]
+        pct = round(((c0 - c1) / c1) * 100, 4) if c1 > 0 else 0.0
+        out[sym] = {
+            'close': c0,
+            'prev_close': c1,
+            'pct': pct,
+            'trading_date': date_s,
+        }
+    return out
+
+
 async def _fill_prices_from_historical_db(items: List[Dict[str, Any]]) -> None:
-    """One DB session: last close + day % from last two bars (avoids wiping good prices)."""
+    """Batch OHLC: luôn ghi % từ 2 phiên gần nhất khi có trong DB."""
     note = (
         'Giá và % thay đổi lấy từ dữ liệu lịch sử trong DB (bản demo hoặc khi API giá ngoài chưa trả về).'
     )
-    async with AsyncSessionLocal() as session:
+    symbols = [it['symbol'] for it in items]
+    hist = await batch_ohlc_day_pct(symbols)
 
-        for item in items:
-            sym = item['symbol']
-            ch = float(item.get('change_pct') or item.get('change') or 0)
-            need_price = not (item.get('price') and float(item['price']) > 0)
-            need_change = abs(ch) < 1e-9
-            if not need_price and not need_change:
-                continue
+    for item in items:
+        sym = item['symbol']
+        row = hist.get(sym)
+        if not row:
+            continue
 
-            res = await session.execute(
-                select(HistoricalPrice.close_price, HistoricalPrice.date)
-                .where(HistoricalPrice.stock_symbol == sym)
-                .order_by(desc(HistoricalPrice.date))
-                .limit(2),
-            )
-            rows = res.all()
-            if not rows:
-                continue
-            c0 = float(rows[0][0])
-            d0 = rows[0][1]
-            date_s = d0.isoformat()[:10] if hasattr(d0, 'isoformat') else str(d0)[:10]
+        c0 = float(row['close'])
+        pct = float(row['pct'])
+        if not (item.get('price') and float(item['price']) > 0):
+            item['price'] = c0
 
-            if need_price:
-                item['price'] = c0
-
-            if len(rows) >= 2:
-                c1 = float(rows[1][0])
-                px = float(item.get('price') or 0) or c0
-                if c1 > 0 and (need_change or need_price):
-                    pct = round(((px - c1) / c1) * 100, 4)
-                    item['change'] = pct
-                    item['change_pct'] = pct
-            elif need_price:
-                item['change'] = 0.0
-                item['change_pct'] = 0.0
-
-            if not item.get('trading_date'):
-                item['trading_date'] = date_s
-            if need_price or need_change:
-                item['quote_source_note'] = note
+        item['change'] = pct
+        item['change_pct'] = pct
+        if not item.get('trading_date'):
+            item['trading_date'] = row.get('trading_date')
+        item['quote_source_note'] = note
 
 
 async def load_watchlist_items() -> List[Dict[str, Any]]:
