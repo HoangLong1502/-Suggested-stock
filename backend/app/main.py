@@ -36,6 +36,17 @@ async def startup_event():
             )
         )
     await ensure_demo_historical_data()
+
+    async def _bootstrap_sync() -> None:
+        await asyncio.sleep(1)
+        try:
+            from app.services.stock_ingest import sync_market_snapshot
+
+            await sync_market_snapshot()
+        except Exception:
+            pass
+
+    _ = asyncio.create_task(_bootstrap_sync())
     _ = asyncio.create_task(periodic_market_sync())
 
 

@@ -269,37 +269,35 @@ class HistoricalAnalyzer:
         }
 
     @staticmethod
-    async def snapshot_movers_from_db(limit: int = 5) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    async def snapshot_movers_from_db(
+        limit: int = 8,
+        symbols: Optional[List[str]] = None,
+    ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         """
-        Build top gainers/losers using last vs previous close in historical_prices
-        (fallback when live quote table is flat / empty).
+        Top gainers/losers từ 2 nến đóng gần nhất (batch query, không quét toàn DB).
         """
-        async with AsyncSessionLocal() as session:
-            sym_rows = await session.execute(select(HistoricalPrice.stock_symbol).distinct())
-            symbols = [s for s in sym_rows.scalars().all() if s]
+        from app.services.stock_ingest import DEFAULT_WATCHLIST, batch_ohlc_day_pct
+
+        syms = symbols or list(DEFAULT_WATCHLIST)
+        hist = await batch_ohlc_day_pct(syms)
 
         movers: List[Dict[str, Any]] = []
-        for sym in symbols:
-            prices = await HistoricalAnalyzer.get_historical_prices(sym, days=10)
-            if len(prices) < 2:
+        for sym, row in hist.items():
+            pct = float(row.get('pct') or 0)
+            c0 = float(row.get('close') or 0)
+            c1 = row.get('prev_close')
+            if c0 <= 0:
                 continue
-            c0 = float(prices[-1]['close'])
-            c1 = float(prices[-2]['close'])
-            if c1 <= 0:
-                continue
-            pct = round(((c0 - c1) / c1) * 100, 2)
             sig = 'bull' if pct > 0.05 else ('bear' if pct < -0.05 else 'flat')
             sig_vi = 'Tích cực' if sig == 'bull' else ('Tiêu cực' if sig == 'bear' else 'Trung lập')
-            d_last = prices[-1].get('date')
-            date_s = d_last.isoformat()[:10] if hasattr(d_last, 'isoformat') else str(d_last)[:10]
             movers.append(
                 {
                     'symbol': sym,
                     'change': pct,
                     'change_pct': pct,
                     'last_close': round(c0, 2),
-                    'prev_close': round(c1, 2),
-                    'trading_date': date_s,
+                    'prev_close': round(float(c1), 2) if c1 is not None else None,
+                    'trading_date': row.get('trading_date'),
                     'signal': sig,
                     'signal_vi': sig_vi,
                 }

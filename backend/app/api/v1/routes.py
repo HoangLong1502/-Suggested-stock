@@ -1,11 +1,20 @@
+import time
+from typing import List, Annotated, Any, Dict, Optional
+
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
-from typing import List, Annotated, Any, Dict
 
 from app.models.postgres import AsyncSessionLocal
 from app.models.schema import Stock
-from app.services.stock_ingest import VN_INDEX_SYMBOLS, load_watchlist_items, sync_market_snapshot, vietnam_market_session
+from app.services.stock_ingest import (
+    DEFAULT_WATCHLIST,
+    VN_INDEX_SYMBOLS,
+    batch_ohlc_day_pct,
+    load_watchlist_items,
+    sync_market_snapshot_if_stale,
+    vietnam_market_session,
+)
 from app.services.agent_orchestrator import orchestrator
 from app.services.recommendation_engine import recommendation_engine
 from app.services.historical_analyzer import historical_analyzer
@@ -16,12 +25,27 @@ from app.services.stock_ranker import stock_ranker
 
 router = APIRouter()
 
+_overview_cache: Dict[str, Any] = {'ts': 0.0, 'body': None}
+OVERVIEW_CACHE_SECONDS = 25
+
 
 @router.get('/market/overview')
-async def market_overview():
-    """Get market overview with indices, watchlist, gainers, losers."""
+async def market_overview(fast: bool = Query(True, description='Bỏ qua sync VNDirect nếu vừa sync gần đây')):
+    """Market overview — đọc DB nhanh; sync giá nền / theo TTL."""
+    now = time.monotonic()
+    cached = _overview_cache.get('body')
+    if cached is not None and now - float(_overview_cache.get('ts') or 0) < OVERVIEW_CACHE_SECONDS:
+        return JSONResponse(cached)
+
     await ensure_demo_historical_data()
-    await sync_market_snapshot()
+    # fast=true: chỉ đọc DB (sync chạy nền mỗi 60s lúc startup) — tránh treo request
+    if not fast:
+        from app.services.stock_ingest import sync_market_snapshot
+
+        try:
+            await sync_market_snapshot()
+        except Exception:
+            pass
     watchlist_items = await load_watchlist_items()
 
     async with AsyncSessionLocal() as session:
@@ -34,6 +58,9 @@ async def market_overview():
         indices_result = await session.execute(
             select(Stock).where(Stock.symbol.in_(VN_INDEX_SYMBOLS))
         )
+        gainer_stocks = gainers_result.scalars().all()
+        loser_stocks = losers_result.scalars().all()
+        index_stocks = indices_result.scalars().all()
 
     def _sig(pct: float) -> tuple[str, str]:
         if pct > 0.05:
@@ -43,7 +70,7 @@ async def market_overview():
         return 'flat', 'Trung lập'
 
     stock_gainers = []
-    for stock in gainers_result.scalars().all():
+    for stock in gainer_stocks:
         ch = float(stock.change or 0.0)
         sig, sig_vi = _sig(ch)
         stock_gainers.append(
@@ -57,7 +84,7 @@ async def market_overview():
             }
         )
     stock_losers = []
-    for stock in losers_result.scalars().all():
+    for stock in loser_stocks:
         ch = float(stock.change or 0.0)
         sig, sig_vi = _sig(ch)
         stock_losers.append(
@@ -71,7 +98,15 @@ async def market_overview():
             }
         )
 
-    hg, hl = await historical_analyzer.snapshot_movers_from_db(8)
+    mover_symbols = list(
+        dict.fromkeys(
+            [
+                *[str(it.get('symbol', '')).upper() for it in watchlist_items if it.get('symbol')],
+                *DEFAULT_WATCHLIST,
+            ],
+        ),
+    )
+    hg, hl = await historical_analyzer.snapshot_movers_from_db(8, symbols=mover_symbols)
     top_gainers = hg if hg else stock_gainers
     top_losers = hl if hl else stock_losers
     if not top_gainers or all(abs(float(g.get('change') or 0)) < 1e-6 for g in top_gainers):
@@ -81,7 +116,7 @@ async def market_overview():
         if hl:
             top_losers = hl
 
-    stock_map = {str(stock.symbol).strip().upper(): stock for stock in indices_result.scalars().all()}
+    stock_map = {str(stock.symbol).strip().upper(): stock for stock in index_stocks}
     indices: List[Dict[str, Any]] = []
     for symbol in VN_INDEX_SYMBOLS:
         st = stock_map.get(symbol)
@@ -96,34 +131,37 @@ async def market_overview():
         else:
             indices.append({'symbol': symbol, 'price': 0.0, 'change': 0.0})
 
+    idx_hist = await batch_ohlc_day_pct(VN_INDEX_SYMBOLS)
     for row in indices:
-        if row['price'] > 0:
+        h = idx_hist.get(row['symbol'])
+        if not h:
             continue
-        c, pct, _ = await historical_analyzer.last_close_and_day_pct(row['symbol'])
-        if c is not None:
-            row['price'] = float(c)
-            row['change'] = float(pct or 0.0)
+        if row['price'] <= 0:
+            row['price'] = float(h['close'])
+        if abs(float(row['change'] or 0)) < 1e-9:
+            row['change'] = float(h.get('pct') or 0.0)
 
     chart_preview = await historical_analyzer.sparkline_series(VN_INDEX_SYMBOLS[0], 7)
 
-    return JSONResponse(
-        {
-            'indices': indices,
-            'watchlist': watchlist_items,
-            'top_gainers': top_gainers,
-            'top_losers': top_losers,
-            'chart_preview': chart_preview,
-            'sector_heatmap': [
-                {'sector': 'Banking', 'strength': 0.7},
-                {'sector': 'Real Estate', 'strength': 0.3},
-            ],
-            'market_session': vietnam_market_session(),
-            'quote_source': (
-                'Giá watchlist: ưu tiên VNDirect finho; nếu không có thì dùng OHLC trong DB. '
-                'Dữ liệu demo được seed tự động khi DB trống để giao diện và agent hoạt động.'
-            ),
-        }
-    )
+    body = {
+        'indices': indices,
+        'watchlist': watchlist_items,
+        'top_gainers': top_gainers,
+        'top_losers': top_losers,
+        'chart_preview': chart_preview,
+        'sector_heatmap': [
+            {'sector': 'Banking', 'strength': 0.7},
+            {'sector': 'Real Estate', 'strength': 0.3},
+        ],
+        'market_session': vietnam_market_session(),
+        'quote_source': (
+            'Giá watchlist: ưu tiên VNDirect finho; nếu không có thì dùng OHLC trong DB. '
+            'Dữ liệu demo được seed tự động khi DB trống để giao diện và agent hoạt động.'
+        ),
+    }
+    _overview_cache['body'] = body
+    _overview_cache['ts'] = time.monotonic()
+    return JSONResponse(body)
 
 
 @router.get('/stock/{symbol}')

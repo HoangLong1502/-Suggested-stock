@@ -202,8 +202,34 @@ function MoverColumn({
   const bar = accent === 'emerald' ? 'from-emerald-500/80' : 'from-rose-500/80';
   if (!rows.length) {
     return (
-      <div className={`rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 p-6 text-center text-sm text-slate-500 ring-1 ${ring}`}>
-        Chưa có dữ liệu {title.toLowerCase()}. Khởi động backend và đợi đồng bộ / seed lịch sử.
+      <div className={`rounded-2xl border border-dashed border-slate-700 bg-slate-950/50 p-5 text-left text-sm text-slate-300 ring-1 ${ring}`}>
+        <p className="font-medium text-slate-200">Chưa có dữ liệu {title.toLowerCase()}</p>
+        <p className="mt-2 text-xs leading-relaxed text-slate-400">
+          Top movers lấy từ API backend (giá lịch sử trong DB). Làm lần lượt:
+        </p>
+        <ol className="mt-2 list-decimal space-y-1.5 pl-4 text-xs text-slate-300">
+          <li>
+            Mở terminal tại thư mục dự án, chạy:{' '}
+            <code className="rounded bg-black/40 px-1.5 py-0.5 font-mono text-[11px] text-violet-200">docker compose up --build</code>
+          </li>
+          <li>
+            Đợi container <strong className="text-slate-200">backend</strong> và <strong className="text-slate-200">postgres</strong> chạy
+            (log không báo lỗi kết nối DB).
+          </li>
+          <li>
+            Kiểm tra API:{' '}
+            <a
+              href="http://localhost:5555/api/v1/market/overview"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-violet-300 underline hover:text-violet-200"
+            >
+              localhost:5555/api/v1/market/overview
+            </a>{' '}
+            — phải có mảng <code className="font-mono text-[11px]">top_gainers</code> không rỗng.
+          </li>
+          <li>Tải lại trang frontend (F5). Lần đầu có thể mất 1–2 phút để đồng bộ giá / seed demo.</li>
+        </ol>
       </div>
     );
   }
