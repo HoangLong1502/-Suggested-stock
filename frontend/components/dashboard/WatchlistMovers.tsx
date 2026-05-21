@@ -98,7 +98,7 @@ export default function WatchlistMovers({
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-300/90">Watchlist</p>
             <h2 className="mt-1 text-2xl font-bold tracking-tight text-white">Danh mã theo dõi</h2>
-            <p className="mt-1 max-w-md text-sm text-slate-400">
+            <p className="mt-1 max-w-3xl text-sm text-slate-400">
               Sau khi hết phiên, bảng hiển thị <span className="text-slate-200">giá đóng cửa / tham chiếu cuối</span> và % so
               với phiên liền trước. Trong giờ giao dịch, giá phản ánh bản ghi mới nhất từ nguồn.
             </p>
@@ -110,7 +110,7 @@ export default function WatchlistMovers({
             </span>
           ) : null}
         </div>
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {watchlist.map((item) => {
             const p = pct(item);
             const up = p >= 0;
@@ -180,7 +180,7 @@ export default function WatchlistMovers({
             <p className="text-xs text-slate-500">% so với phiên liền trước trong DB; kèm tín hiệu nhanh</p>
           </div>
         </div>
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4 md:grid-cols-2">
           <MoverColumn title="Top tăng" accent="emerald" rows={topGainers} />
           <MoverColumn title="Top giảm" accent="rose" rows={topLosers} />
         </div>
