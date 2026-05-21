@@ -2,13 +2,23 @@
 Stock Ranker Service - Ranks all watched stocks based on AI consensus analysis.
 Analyzes 2+ months of historical data to provide comprehensive rankings.
 """
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime, timezone
 import asyncio
+import time
 
 from app.services.agent_orchestrator import orchestrator
 from app.services.recommendation_engine import recommendation_engine
 from app.services.stock_ingest import load_watchlist_symbols
+
+MAX_RANK_SYMBOLS = 10
+RANK_CACHE_SECONDS = 300
+_rank_cache: Dict[str, Any] = {'ts': 0.0, 'min_confidence': None, 'body': None}
+
+
+def _public_stock_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip internal keys (e.g. cached pipeline) before API responses."""
+    return {k: v for k, v in row.items() if not k.startswith('_')}
 
 
 class StockRanker:
@@ -79,10 +89,19 @@ class StockRanker:
         Returns:
             Dictionary with ranked stocks by confidence score
         """
-        try:
-            symbols = await load_watchlist_symbols()
+        now = time.monotonic()
+        cached = _rank_cache.get('body')
+        if (
+            cached is not None
+            and _rank_cache.get('min_confidence') == min_confidence
+            and now - float(_rank_cache.get('ts') or 0) < RANK_CACHE_SECONDS
+        ):
+            return cached
 
-            # Giới hạn song song: mỗi mã chạy 5 agent + LLM — 10+ mã cùng lúc dễ 500/timeout.
+        try:
+            symbols = (await load_watchlist_symbols())[:MAX_RANK_SYMBOLS]
+
+            # Giới hạn song song: mỗi mã chạy 5 agent — quá nhiều mã → timeout/500.
             sem = asyncio.Semaphore(2)
 
             async def run_one(sym: str):
@@ -126,6 +145,7 @@ class StockRanker:
                         }
                         for agent in agents
                     ],
+                    '_pipeline': pipeline_result,
                 })
             
             # Sort by confidence descending
@@ -141,8 +161,8 @@ class StockRanker:
 
             if buy_stocks:
                 await StockRanker._enrich_buy_rows(buy_stocks)
-            
-            return {
+
+            payload = {
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'analysis_period_days': 60,
                 'min_confidence': min_confidence,
@@ -160,7 +180,11 @@ class StockRanker:
                 'all_ranked': ranked_stocks,
                 'failed_analysis': failed_stocks,
             }
-            
+            _rank_cache['body'] = payload
+            _rank_cache['ts'] = time.monotonic()
+            _rank_cache['min_confidence'] = min_confidence
+            return payload
+
         except Exception as e:
             return {
                 'status': 'error',
@@ -169,24 +193,53 @@ class StockRanker:
             }
 
     @staticmethod
+    async def _attach_timing_to_best(payload: Dict[str, Any], pipeline: Dict[str, Any] | None) -> None:
+        """Enrich best-stock payload from cached pipeline (no second agent run)."""
+        symbol = payload.get('best_stock')
+        if not symbol or not pipeline:
+            return
+        try:
+            full = await recommendation_engine.generate_full_recommendation(symbol, pipeline)
+            payload['buy_timing'] = full.get('buy_timing', {})
+            payload['recommended_entry'] = (full.get('entry_points') or {}).get('recommended_entry')
+            payload['current_price'] = full.get('current_price')
+            payload['entry_points'] = full.get('entry_points', {})
+            payload['technical_snapshot'] = full.get('indicators_snapshot', {})
+            payload['timestamp'] = full.get('timestamp') or payload.get('timestamp')
+            bt = full.get('buy_timing') or {}
+            sig = '; '.join(bt.get('buy_signals') or []) or (
+                'xem RSI/MACD/khối lượng trong khối buy_timing.'
+            )
+            payload['why_this_stock'] = (
+                f"{payload.get('reasoning', '')}\n\n"
+                f"Tổng hợp sau debate + bối cảnh kỹ thuật 60 ngày: {bt.get('timing', '')} "
+                f"(mức ưu tiên {bt.get('urgency', '')}). Tín hiệu: {sig}"
+            ).strip()
+        except Exception as exc:
+            payload['timing_error'] = str(exc)
+
+    @staticmethod
     async def get_best_stock() -> Dict[str, Any]:
         """Get the single best stock based on 2 months analysis."""
         ranking = await StockRanker.rank_all_stocks(min_confidence=0.65)
-        
+
         if ranking.get('status') == 'error':
             return ranking
-        
+
         all_ranked = ranking.get('all_ranked', [])
         if not all_ranked:
             return {
                 'status': 'no_high_confidence_stocks',
-                'message': 'No stocks meet minimum confidence threshold',
+                'message': 'No stocks could be analyzed (check DB / watchlist)',
                 'timestamp': ranking.get('timestamp'),
+                'best_stock': None,
             }
-        
+
         best = all_ranked[0]
-        
-        return {
+        pipeline = best.get('_pipeline')
+
+        payload: Dict[str, Any] = {
+            'status': 'ok',
             'best_stock': best['symbol'],
             'recommendation': best['recommendation'],
             'confidence': best['confidence'],
@@ -196,6 +249,8 @@ class StockRanker:
             'analysis_period': '60 days (2 months)',
             'timestamp': ranking.get('timestamp', datetime.now(timezone.utc).isoformat()),
         }
+        await StockRanker._attach_timing_to_best(payload, pipeline)
+        return payload
 
     @staticmethod
     async def compare_stocks(symbols: List[str]) -> Dict[str, Any]:

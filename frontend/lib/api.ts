@@ -2,7 +2,7 @@ export const apiUrl = (() => {
   if (typeof window === 'undefined') {
     return process.env.INTERNAL_API_URL ?? 'http://backend:8000/api/v1';
   }
-  return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
+  return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:5555/api/v1';
 })();
 
 const SSR_FETCH_MS = 70_000;
@@ -17,9 +17,7 @@ async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
   }
 }
 
-export const WATCHLIST_FALLBACK_SYMBOLS = [
-  'SSI', 'VNM', 'VCB', 'FPT', 'MWG', 'VHM', 'PNJ', 'HPG', 'TPB', 'ACB', 'BVH', 'MSN', 'NVL', 'GAS', 'PXL',
-] as const;
+export { WATCHLIST_FALLBACK_SYMBOLS } from './watchlist-symbols';
 
 export async function getDashboardData() {
   try {
@@ -83,6 +81,46 @@ export async function getAgentDebate(symbol: string) {
   } catch {
     return { symbol, debate: [], consensus: null };
   }
+}
+
+export type SectorStockRow = {
+  symbol: string;
+  change_pct: number;
+  price: number;
+  trading_date?: string;
+  finfo_industry?: string;
+};
+
+export type SectorRow = {
+  id: string;
+  name_vi: string;
+  name_en: string;
+  change_pct_avg: number;
+  stocks_with_data: number;
+  stocks_total: number;
+  gainers: number;
+  losers: number;
+  flat: number;
+  momentum: string;
+  momentum_vi: string;
+  leader_symbol: string | null;
+  leader_change_pct: number | null;
+  stocks: SectorStockRow[];
+};
+
+export type SectorAnalysisData = {
+  as_of: string;
+  market_avg_change_pct: number;
+  sectors: SectorRow[];
+  data_source: string;
+  top_sectors: string[];
+  bottom_sectors: string[];
+};
+
+export async function getSectorAnalysis(): Promise<SectorAnalysisData> {
+  const res = await fetchWithTimeout(`${apiUrl}/market/sectors?fast=true`, 60_000);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json() as Promise<SectorAnalysisData>;
 }
 
 export async function getSuggestedStock() {

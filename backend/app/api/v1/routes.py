@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import List, Annotated, Any, Dict, Optional
 
@@ -21,7 +22,8 @@ from app.services.historical_analyzer import historical_analyzer
 from app.services.demo_seed import ensure_demo_historical_data
 from app.services.fundamental_analyzer import fundamental_analyzer
 from app.services.technical_calculator import technical_calculator
-from app.services.stock_ranker import stock_ranker
+from app.services.stock_ranker import stock_ranker, _public_stock_row
+from app.services.sector_analyzer import sector_analyzer
 
 router = APIRouter()
 
@@ -37,7 +39,10 @@ async def market_overview(fast: bool = Query(True, description='Bỏ qua sync VN
     if cached is not None and now - float(_overview_cache.get('ts') or 0) < OVERVIEW_CACHE_SECONDS:
         return JSONResponse(cached)
 
+    from app.services.demo_seed import ensure_watchlist_historical_gaps
+
     await ensure_demo_historical_data()
+    await ensure_watchlist_historical_gaps()
     # fast=true: chỉ đọc DB (sync chạy nền mỗi 60s lúc startup) — tránh treo request
     if not fast:
         from app.services.stock_ingest import sync_market_snapshot
@@ -162,6 +167,36 @@ async def market_overview(fast: bool = Query(True, description='Bỏ qua sync VN
     _overview_cache['body'] = body
     _overview_cache['ts'] = time.monotonic()
     return JSONResponse(body)
+
+
+_sector_cache: Dict[str, Any] = {'ts': 0.0, 'body': None}
+SECTOR_CACHE_SECONDS = 120
+
+
+@router.get('/market/sectors')
+async def market_sectors(
+    fast: bool = Query(True, description='Bỏ gọi VNDirect finfo (mặc định nhanh, chỉ DB)'),
+):
+    """Phân tích ngành: % trung bình, mã dẫn dắt, tăng/giảm trong từng nhóm."""
+    now = time.monotonic()
+    if _sector_cache.get('body') and now - float(_sector_cache.get('ts') or 0) < SECTOR_CACHE_SECONDS:
+        return JSONResponse(_sector_cache['body'])
+
+    try:
+    from app.services.demo_seed import ensure_watchlist_historical_gaps
+
+    await ensure_demo_historical_data()
+    await ensure_watchlist_historical_gaps()
+    body = await sector_analyzer.build_sector_analysis(include_finfo=not fast)
+        _sector_cache['body'] = body
+        _sector_cache['ts'] = time.monotonic()
+        return JSONResponse(body)
+    except Exception as e:
+        stale = _sector_cache.get('body')
+        if stale is not None:
+            stale = {**stale, 'stale': True, 'server_message': str(e)}
+            return JSONResponse(stale)
+        return JSONResponse({'error': str(e), 'sectors': []}, status_code=500)
 
 
 @router.get('/stock/{symbol}')
@@ -355,6 +390,23 @@ async def historical_analysis(symbol: str):
 # NEW ENDPOINTS: AI Agents Ranking & Best Stock Selection
 # ============================================================
 
+_best_stock_cache: Dict[str, Any] = {'ts': 0.0, 'body': None}
+BEST_STOCK_CACHE_SECONDS = 600
+_best_stock_lock = asyncio.Lock()
+_best_stock_inflight: Optional[asyncio.Task] = None
+
+
+def _best_stock_degraded(message: str) -> Dict[str, Any]:
+    return {
+        'status': 'degraded',
+        'server_message': message,
+        'best_stock': None,
+        'recommendation': None,
+        'confidence': None,
+        'analysis_period': '60 days (2 months)',
+    }
+
+
 @router.get('/agents/best-stock')
 async def get_best_stock():
     """
@@ -363,38 +415,46 @@ async def get_best_stock():
     
     Returns the stock with highest confidence consensus along with buy timing.
     """
-    try:
-        result = await stock_ranker.get_best_stock()
-        if result.get('status') == 'error':
-            return JSONResponse(result, status_code=500)
+    now = time.monotonic()
+    cached = _best_stock_cache.get('body')
+    if cached is not None and now - float(_best_stock_cache.get('ts') or 0) < BEST_STOCK_CACHE_SECONDS:
+        return JSONResponse(cached)
 
-        if result.get('status') == 'no_high_confidence_stocks':
-            return JSONResponse(result)
+    global _best_stock_inflight
 
-        best_symbol = result.get('best_stock')
-        if best_symbol:
-            agent_results = await orchestrator.run_stock_pipeline(best_symbol)
-            full_recommendation = await recommendation_engine.generate_full_recommendation(
-                best_symbol,
-                agent_results,
-            )
-            result['buy_timing'] = full_recommendation.get('buy_timing', {})
-            result['recommended_entry'] = full_recommendation.get('entry_points', {}).get('recommended_entry')
-            result['current_price'] = full_recommendation.get('current_price')
-            result['entry_points'] = full_recommendation.get('entry_points', {})
-            result['technical_snapshot'] = full_recommendation.get('indicators_snapshot', {})
-            result['timestamp'] = full_recommendation.get('timestamp') or result.get('timestamp')
-            bt = full_recommendation.get('buy_timing') or {}
-            sig = '; '.join(bt.get('buy_signals') or []) or 'xem RSI/MACD/khối lượng trong khối buy_timing.'
-            result['why_this_stock'] = (
-                f"{result.get('reasoning', '')}\n\n"
-                f"Tổng hợp sau debate + bối cảnh kỹ thuật 60 ngày: {bt.get('timing', '')} "
-                f"(mức ưu tiên {bt.get('urgency', '')}). Tín hiệu: {sig}"
-            ).strip()
+    async def _compute() -> Dict[str, Any]:
+        try:
+            await ensure_demo_historical_data()
+            result = await stock_ranker.get_best_stock()
+            if result.get('status') == 'error':
+                body = _best_stock_degraded(result.get('message', 'Ranking failed'))
+                body['timestamp'] = result.get('timestamp')
+                return body
+            if result.get('status') == 'no_high_confidence_stocks':
+                return result
+            return result
+        except Exception as e:
+            return _best_stock_degraded(str(e))
 
-        return JSONResponse(result)
-    except Exception as e:
-        return JSONResponse({'error': str(e)}, status_code=500)
+    async with _best_stock_lock:
+        now = time.monotonic()
+        cached = _best_stock_cache.get('body')
+        if cached is not None and now - float(_best_stock_cache.get('ts') or 0) < BEST_STOCK_CACHE_SECONDS:
+            return JSONResponse(cached)
+        if _best_stock_inflight is None:
+            _best_stock_inflight = asyncio.create_task(_compute())
+        task = _best_stock_inflight
+
+    body = await task
+
+    async with _best_stock_lock:
+        if _best_stock_inflight is task:
+            _best_stock_inflight = None
+
+    if body.get('status') == 'ok':
+        _best_stock_cache['body'] = body
+        _best_stock_cache['ts'] = time.monotonic()
+    return JSONResponse(body)
 
 
 @router.get('/agents/top-stocks')
@@ -416,8 +476,9 @@ async def get_top_stocks(
         List of top stocks ranked by confidence, grouped by recommendation type
     """
     try:
+        await ensure_demo_historical_data()
         ranking = await stock_ranker.rank_all_stocks(min_confidence=min_confidence)
-        
+
         if ranking.get('status') == 'error':
             return JSONResponse(
                 {
@@ -443,11 +504,11 @@ async def get_top_stocks(
                 status_code=200,
             )
         
-        # Limit results
-        all_ranked = ranking.get('all_ranked', [])[:limit]
-        buy_stocks = ranking.get('top_buy_stocks', [])[:limit]
-        hold_stocks = ranking.get('hold_stocks', [])[:limit]
-        sell_stocks = ranking.get('sell_stocks', [])[:limit]
+        # Limit results (strip internal pipeline cache from JSON)
+        all_ranked = [_public_stock_row(s) for s in ranking.get('all_ranked', [])[:limit]]
+        buy_stocks = [_public_stock_row(s) for s in ranking.get('top_buy_stocks', [])[:limit]]
+        hold_stocks = [_public_stock_row(s) for s in ranking.get('hold_stocks', [])[:limit]]
+        sell_stocks = [_public_stock_row(s) for s in ranking.get('sell_stocks', [])[:limit]]
         
         return JSONResponse({
             'timestamp': ranking.get('timestamp'),

@@ -24,18 +24,9 @@ async def init_sample_data():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    watchlist = [
-        {'symbol': 'SSI', 'name': 'Sài Gòn Securities', 'exchange': 'HOSE'},
-        {'symbol': 'VNM', 'name': 'Vinamilk', 'exchange': 'HOSE'},
-        {'symbol': 'VCB', 'name': 'Vietcombank', 'exchange': 'HOSE'},
-        {'symbol': 'FPT', 'name': 'FPT Corporation', 'exchange': 'HOSE'},
-        {'symbol': 'MWG', 'name': 'Mobile World', 'exchange': 'HOSE'},
-        {'symbol': 'VHM', 'name': 'Vinhomes', 'exchange': 'HOSE'},
-        {'symbol': 'PNJ', 'name': 'PNJ', 'exchange': 'HOSE'},
-        {'symbol': 'HPG', 'name': 'Hoa Phat Group', 'exchange': 'HOSE'},
-        {'symbol': 'TPB', 'name': 'Techcombank', 'exchange': 'HOSE'},
-        {'symbol': 'ACB', 'name': 'Asia Commercial Bank', 'exchange': 'HOSE'},
-    ]
+    from app.services.stock_ingest import DEFAULT_WATCHLIST
+
+    watchlist = [{'symbol': sym, 'name': sym, 'exchange': 'HOSE'} for sym in DEFAULT_WATCHLIST]
 
     async with async_session() as session:
         for stock_info in watchlist:

@@ -110,6 +110,7 @@ export default function WatchlistMovers({
             </span>
           ) : null}
         </div>
+        <div className="max-h-[min(70vh,720px)] overflow-y-auto overflow-x-hidden pr-1">
         <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {watchlist.map((item) => {
             const p = pct(item);
@@ -168,6 +169,7 @@ export default function WatchlistMovers({
               </div>
             );
           })}
+        </div>
         </div>
       </section>
 

@@ -454,7 +454,7 @@ Provide a concise synthesis of:
 
 Keep response under 200 words."""
             
-            debate_response = await llm_provider.generate(prompt)
+            debate_response = await llm_provider.complete(prompt)
             return debate_response
         except Exception as e:
             return f"Debate synthesis unavailable: {str(e)}"
