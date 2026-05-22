@@ -8,6 +8,6 @@ interface MarketState {
 }
 
 export const useMarketStore = create<MarketState>((set) => ({
-  selectedSymbol: 'SSI',
-  setSelectedSymbol: (symbol) => set({ selectedSymbol: symbol }),
+  selectedSymbol: '',
+  setSelectedSymbol: (symbol) => set({ selectedSymbol: symbol.trim().toUpperCase() }),
 }));

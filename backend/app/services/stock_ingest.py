@@ -7,47 +7,32 @@ from zoneinfo import ZoneInfo
 import httpx
 from sqlalchemy import select, desc
 
+from app.core.config import settings
 from app.models.schema import Stock, Watchlist, HistoricalPrice
 from app.models.postgres import AsyncSessionLocal
+from app.services.vn_realtime_quotes import fetch_vci_price_board
 
 
 VN_INDEX_SYMBOLS = ['VNINDEX', 'HNX', 'UPCOM']
 
-# Mã thanh khoản VN — ngân hàng, CK, BĐS, bluechip (dedupe khi load)
+# Watchlist cố định (user) + 5 bluechip nổi tiếng: FPT, VHM, GAS, PLX, BID
 DEFAULT_WATCHLIST: List[str] = list(
     dict.fromkeys(
         [
-            # Chứng khoán
-            'SSI', 'VCI', 'VND', 'SHS', 'HCM', 'BSI', 'FTS', 'VIX', 'APG',
-            # Ngân hàng
-            'VCB', 'TCB', 'BID', 'CTG', 'MBB', 'ACB', 'TPB', 'VPB', 'STB', 'HDB', 'LPB', 'EIB', 'MSB', 'SHB', 'OCB', 'VIB', 'NVB',
-            # Bất động sản
-            'VHM', 'VIC', 'NVL', 'KDH', 'DXG', 'NLG', 'PDR', 'CEO', 'HDG', 'DIG', 'VRE', 'BCM', 'SCR', 'IJC', 'NTL',
-            # Công nghệ
-            'FPT', 'CMG', 'FOX', 'ELC', 'SGT',
-            # Dầu khí & năng lượng
-            'GAS', 'PLX', 'PVD', 'PVS', 'OIL', 'BSR', 'PVC', 'POW', 'GEG', 'PC1',
-            # Bán lẻ & tiêu dùng
-            'MWG', 'FRT', 'VNM', 'MSN', 'SAB', 'BHN', 'KDC', 'PNJ', 'MCH', 'QNS', 'VHC', 'ANV', 'VJC',
-            # Thép & xây dựng
-            'HPG', 'HSG', 'NKG', 'CTD', 'VCG', 'HHV', 'CII', 'HBC', 'LCG',
-            # Bảo hiểm
-            'BVH', 'PVI', 'MIG', 'BMI',
-            # Điện & công nghiệp
-            'REE', 'GEX', 'VGC', 'GVR', 'DCM', 'DPM', 'CSV',
-            # Vận tải & logistics
-            'GMD', 'VSC', 'VTP', 'HAH', 'SCS', 'VOS', 'PVT',
-            # Khác (bluechip / VN30 hay giao dịch)
-            'DHG', 'FMC', 'IDC', 'KBC', 'IMP', 'DGC', 'VPI', 'SZC', 'STK', 'VGS', 'HAX', 'DGW', 'CTR',
-        ]
-    )
+            'OIL', 'PXL', 'SSI', 'CII', 'MBB', 'BSR', 'DPM', 'HAG', 'MSN', 'MSR', 'SGP',
+            'DCM', 'HPG', 'FPR', 'MCH', 'VTP', 'VTB', 'ACV', 'MWG', 'POW', 'SAB', 'TCB',
+            'VCB', 'VIC', 'VJC', 'VNM',
+            'FPT', 'VHM', 'GAS', 'PLX', 'BID',
+        ],
+    ),
 )
 
 FINFO_STOCK_PRICES = 'https://finfo-api.vndirect.com.vn/v4/stock_prices'
 
 _last_sync_monotonic: float = 0.0
 _sync_lock = asyncio.Lock()
-SYNC_TTL_SECONDS = 120
+SYNC_TTL_SECONDS = max(2, int(getattr(settings, 'quote_sync_interval_seconds', 8) or 8))
+QUOTE_MAX_DELAY_SECONDS = max(SYNC_TTL_SECONDS, int(getattr(settings, 'quote_max_delay_seconds', 10) or 10))
 
 
 def vietnam_market_session(now: Optional[datetime] = None) -> Dict[str, Any]:
@@ -166,6 +151,8 @@ def _parse_row_to_values(row: Dict[str, Any]) -> Dict[str, Any]:
         'change_abs': change_abs,
         'trading_date': trading_date,
         'quote_synced_at': datetime.now(tz=ZoneInfo('UTC')).isoformat(),
+        'quote_source': 'vndirect_finfo',
+        'demo': False,
     }
     return {
         'symbol': (row.get('symbol') or row.get('code') or '').upper(),
@@ -178,11 +165,16 @@ def _parse_row_to_values(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def fetch_latest_price_row(client: httpx.AsyncClient, symbol: str) -> Optional[Dict[str, Any]]:
+async def fetch_latest_price_row(
+    client: httpx.AsyncClient,
+    symbol: str,
+    *,
+    max_lookback_days: int = 20,
+) -> Optional[Dict[str, Any]]:
     """Latest finfo row for symbol (walks back calendar days if empty / holiday)."""
     sym = symbol.upper().strip()
     tz = ZoneInfo('Asia/Ho_Chi_Minh')
-    for offset in range(0, 20):
+    for offset in range(0, max(1, max_lookback_days)):
         day = (datetime.now(tz) - timedelta(days=offset)).strftime('%Y-%m-%d')
         params = {
             'q': f'code:{sym}~date:gte:{day}~date:lte:{day}',
@@ -215,8 +207,80 @@ async def _fetch_symbol_safe(
             return symbol, None
 
 
+async def _persist_stock_quotes(quotes: Dict[str, Dict[str, Any]]) -> None:
+    if not quotes:
+        return
+    async with AsyncSessionLocal() as session:
+        for code, values in quotes.items():
+            sym = str(code).strip().upper()
+            if not sym or float(values.get('last_price') or 0) <= 0:
+                continue
+            res = await session.execute(select(Stock).where(Stock.symbol == sym))
+            existing = res.scalar_one_or_none()
+            payload = {k: v for k, v in values.items() if k != 'symbol'}
+            if existing:
+                await session.execute(
+                    Stock.__table__.update().where(Stock.id == existing.id).values(**payload),
+                )
+            else:
+                session.add(Stock(symbol=sym, **payload))
+        await session.commit()
+
+
+async def _sync_market_snapshot_impl() -> None:
+    """
+    Refresh giá watchlist + chỉ số: ưu tiên VCI (vnstock Trading), fallback VNDirect finfo.
+    Một batch ~30 mã ≈ vài giây; lặp mỗi SYNC_TTL_SECONDS (mặc định 8s).
+    """
+    watch = await load_watchlist_symbols()
+    symbols = list(dict.fromkeys([*VN_INDEX_SYMBOLS, *watch, *DEFAULT_WATCHLIST]))
+
+    vci_quotes = await fetch_vci_price_board(symbols)
+    await _persist_stock_quotes(vci_quotes)
+
+    missing = [s for s in symbols if s not in vci_quotes]
+    # Chỉ finfo fallback mã lẻ (tối đa 5 ngày) — tránh treo request overview
+    finfo_candidates = [s for s in missing if s not in VN_INDEX_SYMBOLS][:6]
+    if finfo_candidates:
+        sem = asyncio.Semaphore(4)
+
+        async def _finfo_one(sym: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+            async with sem:
+                try:
+                    async with httpx.AsyncClient(timeout=12.0) as client:
+                        row = await fetch_latest_price_row(client, sym, max_lookback_days=5)
+                    return sym, row
+                except Exception:
+                    return sym, None
+
+        try:
+            pairs = await asyncio.wait_for(
+                asyncio.gather(*[_finfo_one(s) for s in finfo_candidates]),
+                timeout=8.0,
+            )
+        except asyncio.TimeoutError:
+            pairs = []
+        finfo_quotes: Dict[str, Dict[str, Any]] = {}
+        for sym, row in pairs:
+            if not row:
+                continue
+            values = _parse_row_to_values(row)
+            code = values.get('symbol')
+            if code:
+                finfo_quotes[code] = values
+        await _persist_stock_quotes(finfo_quotes)
+
+    global _last_sync_monotonic
+    _last_sync_monotonic = time_module.monotonic()
+
+
+async def sync_market_snapshot() -> None:
+    async with _sync_lock:
+        await _sync_market_snapshot_impl()
+
+
 async def sync_market_snapshot_if_stale(ttl_seconds: int = SYNC_TTL_SECONDS) -> bool:
-    """Chạy sync VNDirect tối đa mỗi ttl_seconds — tránh overview/SSR chờ hàng chục giây."""
+    """Chạy sync tối đa mỗi ttl_seconds (mặc định 8s, trễ mục tiêu ≤10s so với vnstock/VCI)."""
     global _last_sync_monotonic
     now = time_module.monotonic()
     if now - _last_sync_monotonic < ttl_seconds:
@@ -225,48 +289,13 @@ async def sync_market_snapshot_if_stale(ttl_seconds: int = SYNC_TTL_SECONDS) -> 
         now = time_module.monotonic()
         if now - _last_sync_monotonic < ttl_seconds:
             return False
-        await sync_market_snapshot()
+        await _sync_market_snapshot_impl()
         _last_sync_monotonic = time_module.monotonic()
     return True
 
 
-async def sync_market_snapshot() -> None:
-    """
-    Refresh prices for indices + watchlist + default liquid names.
-    Persists daily % change in Stock.change (UI expects percent), full row in stock_metadata.
-    """
-    watch = await load_watchlist_symbols()
-    symbols = list(dict.fromkeys([*VN_INDEX_SYMBOLS, *watch, *DEFAULT_WATCHLIST]))
-
-    sem = asyncio.Semaphore(12)
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        pairs = await asyncio.gather(*[_fetch_symbol_safe(client, sem, s) for s in symbols])
-
-    async with AsyncSessionLocal() as session:
-        for sym, row in pairs:
-            if not row:
-                continue
-            values = _parse_row_to_values(row)
-            code = values['symbol']
-            if not code or float(values.get('last_price') or 0) <= 0:
-                continue
-
-            res = await session.execute(select(Stock).where(Stock.symbol == code))
-            existing = res.scalar_one_or_none()
-            payload = {k: v for k, v in values.items() if k != 'symbol'}
-            if existing:
-                await session.execute(
-                    Stock.__table__.update().where(Stock.id == existing.id).values(**payload),
-                )
-            else:
-                session.add(Stock(symbol=code, **payload))
-        await session.commit()
-    global _last_sync_monotonic
-    _last_sync_monotonic = time_module.monotonic()
-
-
 async def ensure_default_watchlist() -> None:
-    """Ghi/merge watchlist mặc định vào DB để UI luôn có đủ mã thanh khoản."""
+    """Ghi watchlist mặc định vào DB — luôn đúng danh sách DEFAULT_WATCHLIST (không gộp mã cũ)."""
     target = list(DEFAULT_WATCHLIST)
     async with AsyncSessionLocal() as session:
         res = await session.execute(select(Watchlist).order_by(Watchlist.created_at.desc()).limit(1))
@@ -274,10 +303,7 @@ async def ensure_default_watchlist() -> None:
         if wl is None:
             session.add(Watchlist(user_id='default', symbols=target))
         else:
-            existing = wl.symbols if isinstance(wl.symbols, list) else []
-            cleaned_existing = [str(s).strip().upper() for s in existing if s and str(s).strip()]
-            merged = list(dict.fromkeys([*cleaned_existing, *target]))
-            wl.symbols = merged
+            wl.symbols = target
         await session.commit()
 
 
@@ -345,15 +371,47 @@ async def batch_ohlc_day_pct(symbols: List[str]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _has_live_market_quote(meta: Dict[str, Any]) -> bool:
+    """Giá live: vnstock VCI hoặc VNDirect finfo — không dùng demo."""
+    if not meta.get('quote_synced_at'):
+        return False
+    if meta.get('demo') is True:
+        return False
+    if meta.get('quote_source') == 'demo_seed':
+        return False
+    return meta.get('quote_source') in (None, 'vndirect_finfo', 'vnstock_vci')
+
+
+def _quote_is_fresh(meta: Dict[str, Any], max_age_seconds: int = QUOTE_MAX_DELAY_SECONDS) -> bool:
+    if not _has_live_market_quote(meta):
+        return False
+    synced = meta.get('quote_synced_at')
+    if not synced:
+        return False
+    try:
+        ts = datetime.fromisoformat(str(synced).replace('Z', '+00:00'))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=ZoneInfo('UTC'))
+        age = (datetime.now(tz=ZoneInfo('UTC')) - ts.astimezone(ZoneInfo('UTC'))).total_seconds()
+        return age <= max_age_seconds
+    except (TypeError, ValueError):
+        return True
+
+
 async def _fill_prices_from_historical_db(items: List[Dict[str, Any]]) -> None:
-    """Batch OHLC: luôn ghi % từ 2 phiên gần nhất khi có trong DB."""
+    """OHLC DB chỉ fallback mã chưa có quote live."""
+    live_sources = ('vndirect_finfo', 'vnstock_vci')
+    fallback_items = [it for it in items if it.get('quote_source') not in live_sources]
+    if not fallback_items:
+        return
+
     note = (
-        'Giá và % thay đổi lấy từ dữ liệu lịch sử trong DB (bản demo hoặc khi API giá ngoài chưa trả về).'
+        'Giá demo từ DB (chưa sync VCI/vnstock). Đợi tối đa ~10s hoặc bấm Làm mới giá.'
     )
-    symbols = [it['symbol'] for it in items]
+    symbols = [it['symbol'] for it in fallback_items]
     hist = await batch_ohlc_day_pct(symbols)
 
-    for item in items:
+    for item in fallback_items:
         sym = item['symbol']
         row = hist.get(sym)
         if not row:
@@ -368,10 +426,18 @@ async def _fill_prices_from_historical_db(items: List[Dict[str, Any]]) -> None:
         item['change_pct'] = pct
         if not item.get('trading_date'):
             item['trading_date'] = row.get('trading_date')
+        item['quote_source'] = 'demo_db'
         item['quote_source_note'] = note
 
 
-async def load_watchlist_items() -> List[Dict[str, Any]]:
+async def load_watchlist_items(*, skip_sync: bool = False) -> List[Dict[str, Any]]:
+    """Đọc watchlist từ DB. skip_sync=True: không gọi API (chỉ dùng cache DB)."""
+    if not skip_sync:
+        try:
+            await sync_market_snapshot_if_stale(ttl_seconds=SYNC_TTL_SECONDS)
+        except Exception:
+            pass
+
     symbols = await load_watchlist_symbols()
     if not symbols:
         symbols = list(DEFAULT_WATCHLIST)
@@ -397,6 +463,22 @@ async def load_watchlist_items() -> List[Dict[str, Any]]:
             except (TypeError, ValueError):
                 pass
 
+        live = _has_live_market_quote(meta)
+        fresh = _quote_is_fresh(meta)
+        src = str(meta.get('quote_source') or '')
+        if src == 'vnstock_vci':
+            note = (
+                f'Giá VCI (vnstock Trading) — cập nhật ~{SYNC_TTL_SECONDS}s/lần, trễ mục tiêu ≤{QUOTE_MAX_DELAY_SECONDS}s.'
+                if fresh
+                else 'Giá VCI — đang chờ sync nền…'
+            )
+            qsrc = 'vnstock_vci'
+        elif live:
+            note = 'Giá VNDirect finho (fallback).'
+            qsrc = 'vndirect_finfo'
+        else:
+            note = None
+            qsrc = 'demo_db'
         items.append(
             {
                 'symbol': symbol,
@@ -408,6 +490,9 @@ async def load_watchlist_items() -> List[Dict[str, Any]]:
                 'trading_date': meta.get('trading_date') or meta.get('date'),
                 'volume': float(st.volume or 0.0) if st else 0.0,
                 'quote_time': meta.get('quote_synced_at'),
+                'quote_source': qsrc,
+                'quote_fresh': fresh,
+                'quote_source_note': note,
                 'market_session': session_info,
             }
         )
@@ -438,7 +523,7 @@ async def load_watchlist_items() -> List[Dict[str, Any]]:
 async def periodic_market_sync() -> None:
     while True:
         try:
-            await sync_market_snapshot()
+            await sync_market_snapshot_if_stale(ttl_seconds=0)
         except Exception:
             pass
-        await asyncio.sleep(60)
+        await asyncio.sleep(SYNC_TTL_SECONDS)
