@@ -10,8 +10,13 @@ import time
 from app.services.agent_orchestrator import orchestrator
 from app.services.recommendation_engine import recommendation_engine
 from app.services.stock_ingest import load_watchlist_symbols
-
-MAX_RANK_SYMBOLS = 10
+from app.services.investment_committee import build_committee_report
+from app.services.watchlist_scanner import (
+    MAX_DEEP_ANALYSIS,
+    deep_analysis_symbols,
+    list_all_cases,
+    scan_watchlist,
+)
 RANK_CACHE_SECONDS = 300
 _rank_cache: Dict[str, Any] = {'ts': 0.0, 'min_confidence': None, 'body': None}
 
@@ -99,9 +104,48 @@ class StockRanker:
             return cached
 
         try:
-            symbols = (await load_watchlist_symbols())[:MAX_RANK_SYMBOLS]
+            watchlist_all = await load_watchlist_symbols()
+            scan_passed, sell_top_candidates, scan_excluded = await scan_watchlist(watchlist_all)
+            symbols = deep_analysis_symbols(scan_passed, limit=MAX_DEEP_ANALYSIS)
+            scan_by_symbol = {r['symbol']: r for r in scan_passed}
 
-            # Giới hạn song song: mỗi mã chạy 5 agent — quá nhiều mã → timeout/500.
+            if not symbols:
+                return {
+                    'timestamp': datetime.now(timezone.utc).isoformat(),
+                    'analysis_period_days': 60,
+                    'min_confidence': min_confidence,
+                    'status': 'no_candidates',
+                    'message': 'Không có mã đủ tiềm năng sau bước lọc sơ bộ watchlist',
+                    'pipeline': {
+                        'watchlist_total': len(watchlist_all),
+                        'scan_passed': len(scan_passed),
+                        'sell_top_candidates': len(sell_top_candidates),
+                        'scan_excluded': len(scan_excluded),
+                        'deep_analyzed': 0,
+                    },
+                    'scan_passed': scan_passed[:20],
+                    'sell_top_candidates': sell_top_candidates[:20],
+                    'excluded_stocks': scan_excluded[:40],
+                    'case_catalog': list_all_cases(),
+                    'summary': {
+                        'total_analyzed': 0,
+                        'watchlist_total': len(watchlist_all),
+                        'scan_passed': len(scan_passed),
+                        'scan_excluded': len(scan_excluded),
+                        'high_confidence': 0,
+                        'buy_signals': 0,
+                        'hold_signals': 0,
+                        'sell_signals': 0,
+                        'failed': 0,
+                    },
+                    'top_buy_stocks': [],
+                    'hold_stocks': [],
+                    'sell_stocks': [],
+                    'all_ranked': [],
+                    'failed_analysis': [],
+                }
+
+            # Giai đoạn 2: pipeline 5 agent chỉ trên mã đã qua lọc
             sem = asyncio.Semaphore(2)
 
             async def run_one(sym: str):
@@ -126,12 +170,17 @@ class StockRanker:
                 decision_score = float(decision.get('score', 0.0))
                 consensus_strength = decision.get('extra', {}).get('consensus_strength', 0)
 
+                scan_meta = scan_by_symbol.get(symbol) or {}
                 ranked_stocks.append({
                     'symbol': symbol,
                     'recommendation': decision.get('verdict', 'hold'),
                     'confidence': round(decision_score * 100, 1),
                     'meets_min_confidence': decision_score >= min_confidence,
                     'consensus_strength': round(consensus_strength * 100, 1),
+                    'potential_score': scan_meta.get('potential_score'),
+                    'scan_case_id': scan_meta.get('case_id'),
+                    'scan_case_label_vi': scan_meta.get('case_label_vi'),
+                    'scan_signals': scan_meta.get('signals', []),
                     'reasoning': decision.get('rationale', ''),
                     'agents_buy': decision.get('extra', {}).get('buy_agents', 0),
                     'agents_sell': decision.get('extra', {}).get('sell_agents', 0),
@@ -148,8 +197,15 @@ class StockRanker:
                     '_pipeline': pipeline_result,
                 })
             
-            # Sort by confidence descending
-            ranked_stocks.sort(key=lambda x: x['confidence'], reverse=True)
+            # Ưu tiên BUY + confidence, rồi điểm lọc sơ bộ
+            ranked_stocks.sort(
+                key=lambda x: (
+                    1 if x['recommendation'] == 'buy' else 0,
+                    x['confidence'],
+                    float(x.get('potential_score') or 0),
+                ),
+                reverse=True,
+            )
             
             # Group by recommendation type (buy list respects min confidence)
             buy_stocks = [
@@ -166,8 +222,22 @@ class StockRanker:
                 'timestamp': datetime.now(timezone.utc).isoformat(),
                 'analysis_period_days': 60,
                 'min_confidence': min_confidence,
+                'pipeline': {
+                    'watchlist_total': len(watchlist_all),
+                    'scan_passed': len(scan_passed),
+                    'scan_excluded': len(scan_excluded),
+                    'deep_analyzed': len(symbols),
+                    'deep_symbols': symbols,
+                },
+                'scan_passed': scan_passed[:25],
+                'sell_top_candidates': sell_top_candidates[:25],
+                'excluded_stocks': scan_excluded[:50],
+                'case_catalog': list_all_cases(),
                 'summary': {
                     'total_analyzed': len(symbols),
+                    'watchlist_total': len(watchlist_all),
+                    'scan_passed': len(scan_passed),
+                    'scan_excluded': len(scan_excluded),
                     'high_confidence': sum(1 for s in ranked_stocks if s.get('meets_min_confidence')),
                     'buy_signals': len(buy_stocks),
                     'hold_signals': len(hold_stocks),
@@ -220,37 +290,11 @@ class StockRanker:
 
     @staticmethod
     async def get_best_stock() -> Dict[str, Any]:
-        """Get the single best stock based on 2 months analysis."""
+        """Hội đồng đầu tư: best mua, worst downtrend, SELL sớm + giá thoát."""
         ranking = await StockRanker.rank_all_stocks(min_confidence=0.65)
-
         if ranking.get('status') == 'error':
             return ranking
-
-        all_ranked = ranking.get('all_ranked', [])
-        if not all_ranked:
-            return {
-                'status': 'no_high_confidence_stocks',
-                'message': 'No stocks could be analyzed (check DB / watchlist)',
-                'timestamp': ranking.get('timestamp'),
-                'best_stock': None,
-            }
-
-        best = all_ranked[0]
-        pipeline = best.get('_pipeline')
-
-        payload: Dict[str, Any] = {
-            'status': 'ok',
-            'best_stock': best['symbol'],
-            'recommendation': best['recommendation'],
-            'confidence': best['confidence'],
-            'consensus_strength': best['consensus_strength'],
-            'reasoning': best['reasoning'],
-            'agent_breakdown': best['agent_details'],
-            'analysis_period': '60 days (2 months)',
-            'timestamp': ranking.get('timestamp', datetime.now(timezone.utc).isoformat()),
-        }
-        await StockRanker._attach_timing_to_best(payload, pipeline)
-        return payload
+        return await build_committee_report(ranking)
 
     @staticmethod
     async def compare_stocks(symbols: List[str]) -> Dict[str, Any]:

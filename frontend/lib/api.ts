@@ -1,3 +1,8 @@
+import type { CommitteeReport } from '../types/committee';
+import { WATCHLIST_FALLBACK_SYMBOLS } from './watchlist-symbols';
+
+export { WATCHLIST_FALLBACK_SYMBOLS };
+
 export const apiUrl = (() => {
   if (typeof window === 'undefined') {
     return process.env.INTERNAL_API_URL ?? 'http://backend:8000/api/v1';
@@ -16,8 +21,6 @@ async function fetchWithTimeout(url: string, ms: number): Promise<Response> {
     clearTimeout(t);
   }
 }
-
-export { WATCHLIST_FALLBACK_SYMBOLS } from './watchlist-symbols';
 
 export async function getDashboardData() {
   try {
@@ -54,7 +57,7 @@ export async function getDashboardData() {
 
 const AGENT_LONG_FETCH_MS = 900_000;
 
-export async function getBestStock() {
+export async function getBestStock(): Promise<CommitteeReport> {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), AGENT_LONG_FETCH_MS);
   try {
@@ -62,10 +65,10 @@ export async function getBestStock() {
       cache: 'no-store',
       signal: ctrl.signal,
     });
-    if (!res.ok) return { best_stock: null };
-    return res.json();
+    if (!res.ok) return { status: 'error', best_stock: null };
+    return (await res.json()) as CommitteeReport;
   } catch {
-    return { best_stock: null };
+    return { status: 'error', best_stock: null };
   } finally {
     clearTimeout(t);
   }

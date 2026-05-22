@@ -1,8 +1,10 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AlertCircle, Trophy, Users, Target } from 'lucide-react';
-import { apiUrl, getBestStock } from '../../lib/api';
+import { AlertCircle, Trophy, Users, Target, TrendingDown, ShieldAlert } from 'lucide-react';
+import { apiUrl } from '../../lib/api';
+import { useCommitteeReport } from '../../hooks/useCommitteeReport';
+import type { CommitteePick, CommitteeReport, EarlySellAlert } from '../../types/committee';
 
 interface StockRanking {
   symbol: string;
@@ -30,55 +32,81 @@ interface StockRanking {
   }>;
 }
 
-interface BestStockData {
-  best_stock?: string;
-  symbol?: string;
-  recommendation: string;
-  confidence: number;
-  consensus_strength: number;
-  reasoning: string;
-  why_this_stock?: string;
-  buy_timing?: {
-    timing: string;
-    urgency: string;
-    buy_signals?: string[];
-    wait_reasons?: string[];
-    next_check_hours?: number;
-  };
-  recommended_entry?: number;
-  current_price?: number;
-  timestamp?: string;
-}
+type BestStockData = CommitteeReport & {
+  recommendation?: string;
+  confidence?: number;
+  consensus_strength?: number;
+  reasoning?: string;
+};
+
+type ScanRow = {
+  symbol: string;
+  potential_score?: number;
+  case_id?: string;
+  case_label_vi?: string;
+  filter_reason_vi?: string;
+  signals?: string[];
+  trend?: string;
+  momentum?: string;
+  volume_trend?: string;
+  action_hint?: string;
+  support?: number;
+  resistance?: number;
+};
+
+type CaseCatalogItem = { id: string; label_vi: string; default_pass: boolean };
+
+type PipelineInfo = {
+  watchlist_total?: number;
+  scan_passed?: number;
+  scan_excluded?: number;
+  deep_analyzed?: number;
+  deep_symbols?: string[];
+};
 
 interface TopStocksData {
   timestamp: string;
   analysis_period_days: number;
   status?: string;
   server_message?: string;
+  pipeline?: PipelineInfo;
+  scan_passed?: ScanRow[];
+  sell_top_candidates?: ScanRow[];
+  excluded_stocks?: ScanRow[];
+  case_catalog?: CaseCatalogItem[];
   summary: {
     total_analyzed: number;
+    watchlist_total?: number;
+    scan_passed?: number;
+    scan_excluded?: number;
     high_confidence: number;
     buy_signals: number;
     hold_signals: number;
     sell_signals: number;
   };
   best_stock: string | null;
+  worst_stock?: string | null;
+  workflow?: BestStockData['workflow'];
+  best_pick?: CommitteePick;
+  worst_pick?: CommitteePick;
+  early_sell_alerts?: EarlySellAlert[];
   buy_recommendations: StockRanking[];
   all_ranked: StockRanking[];
 }
 
 export default function AIStockRanking() {
+  const { data: committeeReport } = useCommitteeReport();
+  const bestStock = (committeeReport as BestStockData | undefined) ?? null;
   const [topStocks, setTopStocks] = useState<TopStocksData | null>(null);
-  const [bestStock, setBestStock] = useState<BestStockData | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
-  const [selectedTab, setSelectedTab] = useState<'all' | 'buy' | 'analysis'>('all');
+  const [selectedTab, setSelectedTab] = useState<'all' | 'buy' | 'scan' | 'analysis'>('all');
 
   const fetchData = useCallback(async () => {
     setLoading(true);
     setError(null);
-    await Promise.allSettled([fetchTopStocks(), fetchBestStock()]);
+    await fetchTopStocks();
     setLoading(false);
   }, []);
 
@@ -120,17 +148,6 @@ export default function AIStockRanking() {
     }
   };
 
-  const fetchBestStock = async () => {
-    try {
-      const data = await getBestStock();
-      if (data && data.best_stock) {
-        setBestStock(data as BestStockData);
-      }
-    } catch {
-      // ignore best stock failures
-    }
-  };
-
   const getRecommendationColor = (recommendation: string) => {
     switch (recommendation.toLowerCase()) {
       case 'buy':
@@ -164,25 +181,40 @@ export default function AIStockRanking() {
     return 'text-rose-400';
   };
 
-  const bestHighlight = bestStock || (topStocks?.all_ranked?.[0] as BestStockData | undefined);
+  const bestPick = bestStock?.best_pick;
+  const worstPick = bestStock?.worst_pick ?? topStocks?.worst_pick;
+  const earlyAlerts =
+    (bestStock?.early_sell_alerts?.length ? bestStock.early_sell_alerts : topStocks?.early_sell_alerts) ?? [];
+  const workflow = bestStock?.workflow ?? topStocks?.workflow;
+
+  const bestHighlight =
+    bestPick ||
+    bestStock ||
+    (topStocks?.all_ranked?.[0] as BestStockData | undefined);
 
   if (loading && !topStocks) {
     return (
       <div className="flex h-52 items-center justify-center rounded-2xl border border-violet-500/20 bg-slate-950/60">
         <div className="text-center">
           <Trophy className="mx-auto mb-3 h-9 w-9 animate-pulse text-violet-400" />
-          <p className="text-sm font-medium text-slate-200">Đang phân tích watchlist với AI agents…</p>
+          <p className="text-sm font-medium text-slate-200">Quét watchlist → lọc tiềm năng → phân tích sâu 5 agent…</p>
         </div>
       </div>
     );
   }
 
   const bestSymbol =
-    bestHighlight && 'best_stock' in bestHighlight && bestHighlight.best_stock
+    bestStock?.best_stock ??
+    (bestHighlight && 'best_stock' in bestHighlight && bestHighlight.best_stock
       ? bestHighlight.best_stock
-      : bestHighlight?.symbol ?? '';
+      : bestHighlight?.symbol ?? '');
 
-  const whyText = bestStock?.why_this_stock ?? bestHighlight?.reasoning ?? '';
+  const whyText =
+    bestPick?.why_vi ??
+    bestStock?.why_vi ??
+    bestStock?.why_this_stock ??
+    bestHighlight?.reasoning ??
+    '';
 
   return (
     <div className="space-y-5 text-slate-200">
@@ -195,7 +227,7 @@ export default function AIStockRanking() {
               AI ranking & best pick
             </h2>
             <p className="mt-1.5 max-w-2xl text-base font-normal leading-relaxed text-slate-100">
-              60 ngày dữ liệu, tổng hợp từ nhiều agent — giao diện tối đồng bộ với dashboard.
+              Mô phỏng phòng phân tích: 5 agent + Chủ tịch → best mua giá tốt, worst downtrend, SELL sớm nếu đảo chiều.
             </p>
           </div>
           <button
@@ -221,12 +253,64 @@ export default function AIStockRanking() {
         </div>
       )}
 
+      {workflow?.steps_vi && workflow.steps_vi.length > 0 && (
+        <div className="rounded-xl border border-violet-500/25 bg-violet-950/30 p-4 text-sm text-slate-200">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-violet-200">
+            {workflow.title_vi ?? 'Quy trình hội đồng đầu tư'}
+          </p>
+          <ol className="mt-2 list-decimal space-y-1 pl-5 leading-relaxed">
+            {workflow.steps_vi.map((step, i) => (
+              <li key={i}>{step}</li>
+            ))}
+          </ol>
+          {workflow.agents && workflow.agents.length > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {workflow.agents.map((a) => (
+                <span
+                  key={a.id}
+                  className="rounded-md bg-white/5 px-2 py-0.5 text-xs text-slate-300 ring-1 ring-white/10"
+                  title={a.role_vi}
+                >
+                  {a.id}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       {topStocks && (
         <>
+          {topStocks.pipeline && (
+            <div className="rounded-xl border border-cyan-500/25 bg-cyan-950/25 p-4 text-sm text-slate-200">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-200">Pipeline 2 bước</p>
+              <p className="mt-2 leading-relaxed">
+                Watchlist <span className="font-mono font-bold text-white">{topStocks.pipeline.watchlist_total ?? '—'}</span>
+                {' → '}
+                qua lọc <span className="font-mono font-bold text-emerald-300">{topStocks.pipeline.scan_passed ?? '—'}</span>
+                {' → '}
+                loại <span className="font-mono font-bold text-rose-300">{topStocks.pipeline.scan_excluded ?? '—'}</span>
+                {' → '}
+                phân tích sâu <span className="font-mono font-bold text-violet-300">{topStocks.pipeline.deep_analyzed ?? '—'}</span>
+                {topStocks.pipeline.deep_symbols?.length ? (
+                  <span className="mt-2 block font-mono text-xs text-slate-400">
+                    {topStocks.pipeline.deep_symbols.join(', ')}
+                  </span>
+                ) : null}
+              </p>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             <div className="rounded-xl border border-white/10 bg-slate-900/60 p-4 ring-1 ring-white/5">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Tổng mã</p>
-              <p className="mt-1 font-mono text-2xl font-bold text-white">{topStocks.summary.total_analyzed}</p>
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Watchlist</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-white">
+                {topStocks.summary.watchlist_total ?? topStocks.pipeline?.watchlist_total ?? '—'}
+              </p>
+            </div>
+            <div className="rounded-xl border border-cyan-500/20 bg-cyan-950/30 p-4 ring-1 ring-cyan-500/15">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-cyan-200">Phân tích sâu</p>
+              <p className="mt-1 font-mono text-2xl font-bold text-cyan-200">{topStocks.summary.total_analyzed}</p>
             </div>
             <div className="rounded-xl border border-emerald-500/20 bg-emerald-950/30 p-4 ring-1 ring-emerald-500/15">
               <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-200">Mua</p>
@@ -261,14 +345,18 @@ export default function AIStockRanking() {
                     </p>
                     <h3 className="mt-1 font-mono text-3xl font-bold tracking-tight text-white">{bestSymbol}</h3>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
-                      <span className={`rounded-lg px-2.5 py-1 text-xs font-bold ${getVerdictBadge(bestHighlight.recommendation)}`}>
-                        {bestHighlight.recommendation.toUpperCase()}
+                      <span
+                        className={`rounded-lg px-2.5 py-1 text-xs font-bold ${getVerdictBadge(bestHighlight.recommendation ?? 'hold')}`}
+                      >
+                        {(bestHighlight.recommendation ?? 'hold').toUpperCase()}
                       </span>
-                      <span className={`text-sm font-bold tabular-nums ${getConfidenceColor(bestHighlight.confidence)}`}>
-                        {bestHighlight.confidence}% tin cậy
+                      <span
+                        className={`text-sm font-bold tabular-nums ${getConfidenceColor(bestHighlight.confidence ?? 0)}`}
+                      >
+                        {bestHighlight.confidence ?? 0}% tin cậy
                       </span>
                       <span className="rounded-md bg-white/10 px-2 py-1 text-xs font-medium text-slate-100 ring-1 ring-white/15">
-                        Đồng thuận {bestHighlight.consensus_strength}%
+                        Đồng thuận {bestHighlight.consensus_strength ?? 0}%
                       </span>
                     </div>
                   </div>
@@ -281,14 +369,16 @@ export default function AIStockRanking() {
               </div>
 
               {/* Hàng 2: thời điểm / tín hiệu (vùng “đồ thị” nội dung chính) */}
-              {bestStock?.buy_timing?.timing && (
+              {(bestPick?.buy_timing?.timing || bestStock?.buy_timing?.timing) && (
                 <div className="relative mt-4 rounded-xl border border-amber-500/30 bg-amber-950/40 px-4 py-3">
                   <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-amber-100">Thời điểm nên mua</p>
                   <p className="mt-1 text-base font-semibold text-white">
-                    {bestStock.buy_timing.timing} · {bestStock.buy_timing.urgency}
+                    {(bestPick?.buy_timing ?? bestStock?.buy_timing)?.timing} ·{' '}
+                    {(bestPick?.buy_timing ?? bestStock?.buy_timing)?.urgency}
                   </p>
                   <p className="mt-2 text-sm leading-relaxed text-amber-50">
-                    {bestStock.buy_timing.buy_signals?.join(' · ') || 'Dựa trên RSI, MACD và khối lượng.'}
+                    {(bestPick?.buy_timing ?? bestStock?.buy_timing)?.buy_signals?.join(' · ') ||
+                      'Dựa trên RSI, MACD và khối lượng.'}
                   </p>
                 </div>
               )}
@@ -298,13 +388,17 @@ export default function AIStockRanking() {
                 <div className="rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Giá hiện tại</p>
                   <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-white">
-                    {bestStock?.current_price != null ? bestStock.current_price.toFixed(2) : '—'}
+                    {(bestPick?.current_price ?? bestStock?.current_price) != null
+                      ? Number(bestPick?.current_price ?? bestStock?.current_price).toFixed(2)
+                      : '—'}
                   </p>
                 </div>
                 <div className="rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3">
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Entry gợi ý</p>
                   <p className="mt-1 font-mono text-xl font-semibold tabular-nums text-emerald-300">
-                    {bestStock?.recommended_entry != null ? bestStock.recommended_entry.toFixed(2) : '—'}
+                    {(bestPick?.recommended_entry ?? bestStock?.recommended_entry) != null
+                      ? Number(bestPick?.recommended_entry ?? bestStock?.recommended_entry).toFixed(2)
+                      : '—'}
                   </p>
                 </div>
                 <div className="rounded-xl border border-amber-500/25 bg-amber-950/40 px-4 py-3">
@@ -317,11 +411,104 @@ export default function AIStockRanking() {
             </div>
           )}
 
+          {worstPick?.symbol && (
+            <div className="relative overflow-hidden rounded-2xl border border-rose-500/35 bg-gradient-to-r from-rose-950/50 via-slate-900 to-slate-950 p-5 ring-1 ring-rose-500/20">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+                <div className="flex shrink-0 items-center gap-4">
+                  <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-rose-500 to-red-800 text-white shadow-lg shadow-rose-900/40">
+                    <TrendingDown className="h-7 w-7" />
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-rose-100">
+                      Worst — tránh / thoát
+                    </p>
+                    <h3 className="mt-1 font-mono text-3xl font-bold text-white">{worstPick.symbol}</h3>
+                    <p className="mt-1 text-xs text-rose-200">
+                      Rủi ro downtrend: {worstPick.downtrend_risk ?? '—'}
+                      {worstPick.scan_case_label_vi ? ` · ${worstPick.scan_case_label_vi}` : ''}
+                    </p>
+                  </div>
+                </div>
+                <div className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Lý do hội đồng</p>
+                  <p className="mt-2 text-sm leading-relaxed text-slate-100 line-clamp-5">{worstPick.why_vi ?? '—'}</p>
+                </div>
+              </div>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Giá hiện tại</p>
+                  <p className="mt-1 font-mono text-xl font-semibold text-white tabular-nums">
+                    {worstPick.current_price != null ? worstPick.current_price.toFixed(2) : '—'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-rose-500/25 bg-rose-950/40 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-rose-100">Giá nên bán (tham chiếu)</p>
+                  <p className="mt-1 font-mono text-xl font-semibold text-rose-200 tabular-nums">
+                    {worstPick.recommended_exit_price != null
+                      ? Number(worstPick.recommended_exit_price).toFixed(2)
+                      : '—'}
+                  </p>
+                </div>
+                <div className="rounded-xl border border-white/10 bg-slate-950/80 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-300">Stop-loss</p>
+                  <p className="mt-1 font-mono text-xl font-semibold text-amber-200 tabular-nums">
+                    {worstPick.stop_loss != null ? Number(worstPick.stop_loss).toFixed(2) : '—'}
+                  </p>
+                </div>
+              </div>
+              {worstPick.sell_timing?.timing && (
+                <div className="mt-3 rounded-xl border border-rose-500/30 bg-rose-950/40 px-4 py-3">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-rose-100">Thời điểm bán</p>
+                  <p className="mt-1 font-semibold text-white">
+                    {worstPick.sell_timing.timing} · {worstPick.sell_timing.urgency}
+                  </p>
+                  {worstPick.early_sell_alert?.urgency && (
+                    <p className="mt-2 text-sm font-medium text-rose-200">
+                      SELL sớm: {worstPick.early_sell_alert.urgency} — {worstPick.early_sell_alert.reason_vi}
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {earlyAlerts.length > 0 && (
+            <div className="rounded-2xl border border-orange-500/30 bg-orange-950/25 p-4 ring-1 ring-orange-500/15">
+              <p className="flex items-center gap-2 text-sm font-semibold uppercase tracking-wider text-orange-200">
+                <ShieldAlert className="h-4 w-4" />
+                Cảnh báo SELL sớm (downtrend trước khi lỡ giá thoát)
+              </p>
+              <div className="mt-3 space-y-2">
+                {earlyAlerts.slice(0, 8).map((a) => (
+                  <div
+                    key={a.symbol}
+                    className="flex flex-wrap items-start justify-between gap-2 rounded-xl border border-orange-500/20 bg-black/25 px-3 py-2.5"
+                  >
+                    <div>
+                      <span className="font-mono text-lg font-bold text-white">{a.symbol}</span>
+                      <span className="ml-2 rounded-md bg-rose-500/20 px-2 py-0.5 text-xs font-bold text-rose-200 ring-1 ring-rose-500/30">
+                        {a.urgency}
+                      </span>
+                      <p className="mt-1 text-xs text-slate-300">{a.reason_vi}</p>
+                      {a.signals?.length ? (
+                        <p className="mt-0.5 text-[11px] text-orange-200/90">{a.signals.join(' · ')}</p>
+                      ) : null}
+                    </div>
+                    {a.risk_score != null && (
+                      <span className="text-xs font-mono text-orange-300">risk {a.risk_score}</span>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-1 border-b border-white/10 pb-px">
             {(
               [
-                ['all', 'Tất cả', 'violet'],
+                ['all', 'Sau lọc (AI)', 'violet'],
                 ['buy', 'Chỉ mua', 'emerald'],
+                ['scan', 'Lọc sơ bộ', 'cyan'],
                 ['analysis', 'Chi tiết', 'sky'],
               ] as const
             ).map(([id, label, hue]) => (
@@ -335,7 +522,9 @@ export default function AIStockRanking() {
                       ? 'border-b-2 border-violet-400 text-violet-300'
                       : hue === 'emerald'
                         ? 'border-b-2 border-emerald-400 text-emerald-300'
-                        : 'border-b-2 border-sky-400 text-sky-300'
+                        : hue === 'cyan'
+                          ? 'border-b-2 border-cyan-400 text-cyan-300'
+                          : 'border-b-2 border-sky-400 text-sky-300'
                     : 'border-b-2 border-transparent text-slate-400 hover:text-slate-100'
                 }`}
               >
@@ -345,7 +534,77 @@ export default function AIStockRanking() {
           </div>
 
           <div className="space-y-2.5">
-            {(selectedTab === 'buy' ? topStocks.buy_recommendations : topStocks.all_ranked).map((stock) => (
+            {selectedTab === 'scan' && (
+              <>
+                {topStocks.case_catalog && topStocks.case_catalog.length > 0 && (
+                  <div className="rounded-xl border border-white/10 bg-slate-900/50 p-3 text-xs text-slate-300">
+                    <p className="mb-2 font-semibold uppercase tracking-wider text-slate-200">Các kịch bản hệ thống nhận diện</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {topStocks.case_catalog.map((c) => (
+                        <span
+                          key={c.id}
+                          className={`rounded-md px-2 py-0.5 ring-1 ${
+                            c.default_pass
+                              ? 'bg-emerald-950/50 text-emerald-200 ring-emerald-500/25'
+                              : 'bg-rose-950/40 text-rose-200 ring-rose-500/20'
+                          }`}
+                          title={c.id}
+                        >
+                          {c.label_vi}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <p className="text-xs font-semibold uppercase tracking-wider text-emerald-300">Đủ tiềm năng — phân tích sâu (top)</p>
+                {(topStocks.scan_passed ?? []).slice(0, 15).map((row) => (
+                  <div
+                    key={`pass-${row.symbol}`}
+                    className="rounded-xl border border-emerald-500/20 bg-emerald-950/20 px-4 py-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono text-lg font-bold text-white">{row.symbol}</span>
+                      <span className="text-sm font-bold text-emerald-300">{row.potential_score ?? '—'} điểm</span>
+                    </div>
+                    {row.case_label_vi && (
+                      <p className="mt-1 text-xs font-medium text-cyan-200">{row.case_label_vi}</p>
+                    )}
+                    <p className="mt-1 text-xs text-slate-400">{row.signals?.join(' · ')}</p>
+                  </div>
+                ))}
+                <p className="pt-2 text-xs font-semibold uppercase tracking-wider text-amber-300">Bán đỉnh / chốt lời (gần kháng cự)</p>
+                {(topStocks.sell_top_candidates ?? []).slice(0, 12).map((row) => (
+                  <div
+                    key={`sell-${row.symbol}`}
+                    className="rounded-xl border border-amber-500/25 bg-amber-950/25 px-4 py-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono text-lg font-bold text-amber-100">{row.symbol}</span>
+                      <span className="text-xs font-semibold uppercase text-amber-200">Gợi ý BÁN / chốt</span>
+                    </div>
+                    {row.case_label_vi && <p className="mt-1 text-xs text-amber-100/90">{row.case_label_vi}</p>}
+                    <p className="mt-1 text-[11px] text-slate-400">
+                      Hỗ trợ {row.support ?? '—'} · Kháng cự {row.resistance ?? '—'}
+                    </p>
+                  </div>
+                ))}
+                <p className="pt-2 text-xs font-semibold uppercase tracking-wider text-rose-300">Đã loại — tránh mua (mẫu)</p>
+                {(topStocks.excluded_stocks ?? []).slice(0, 12).map((row) => (
+                  <div
+                    key={`ex-${row.symbol}`}
+                    className="rounded-xl border border-rose-500/15 bg-rose-950/15 px-4 py-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-mono font-semibold text-slate-300">{row.symbol}</span>
+                      <span className="text-xs text-rose-200">{row.case_label_vi ?? row.filter_reason_vi}</span>
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-500">{row.potential_score ?? 0} điểm · {row.trend}</p>
+                  </div>
+                ))}
+              </>
+            )}
+            {selectedTab !== 'scan' &&
+              (selectedTab === 'buy' ? topStocks.buy_recommendations : topStocks.all_ranked).map((stock) => (
               <div
                 key={stock.symbol}
                 role="button"

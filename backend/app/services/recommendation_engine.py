@@ -70,6 +70,7 @@ class RecommendationEngine:
             sell_timing = RecommendationEngine._determine_sell_timing(
                 rsi,
                 macd,
+                trend_direction=hist_analysis.get('trend', {}).get('direction'),
             )
 
             return {
@@ -236,10 +237,16 @@ class RecommendationEngine:
     def _determine_sell_timing(
         rsi: float,
         macd: Dict[str, Any],
+        trend_direction: str | None = None,
     ) -> Dict[str, Any]:
-        """Determine best time to sell."""
+        """Determine best time to sell / cảnh báo downtrend sớm."""
         
         sell_signals = []
+        early_downtrend = False
+
+        if trend_direction == 'downtrend':
+            sell_signals.append('Xu hướng giảm — thoát sớm')
+            early_downtrend = True
 
         # RSI signals
         if rsi > 70:
@@ -248,13 +255,17 @@ class RecommendationEngine:
             sell_signals.append('RSI extended high')
 
         # MACD signals
-        if 'bearish_cross' in macd['crossover_signal']:
+        if 'bearish_cross' in macd.get('crossover_signal', ''):
             sell_signals.append('MACD bearish crossover')
-        elif 'bearish' in macd['crossover_signal']:
+            early_downtrend = True
+        elif 'bearish' in macd.get('crossover_signal', ''):
             sell_signals.append('MACD below signal line')
 
         # Timing recommendation
-        if len(sell_signals) >= 2:
+        if early_downtrend and len(sell_signals) >= 1:
+            timing = 'SELL NOW'
+            urgency = 'High'
+        elif len(sell_signals) >= 2:
             timing = 'SELL NOW'
             urgency = 'High'
         elif len(sell_signals) >= 1:
@@ -268,6 +279,7 @@ class RecommendationEngine:
             'timing': timing,
             'urgency': urgency,
             'sell_signals': sell_signals,
+            'early_downtrend': early_downtrend,
         }
 
     @staticmethod

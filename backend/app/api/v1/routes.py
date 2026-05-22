@@ -10,18 +10,22 @@ from app.models.postgres import AsyncSessionLocal
 from app.models.schema import Stock
 from app.services.stock_ingest import (
     DEFAULT_WATCHLIST,
+    QUOTE_MAX_DELAY_SECONDS,
+    SYNC_TTL_SECONDS,
     VN_INDEX_SYMBOLS,
     batch_ohlc_day_pct,
     load_watchlist_items,
+    sync_market_snapshot,
     sync_market_snapshot_if_stale,
     vietnam_market_session,
 )
 from app.services.agent_orchestrator import orchestrator
 from app.services.recommendation_engine import recommendation_engine
 from app.services.historical_analyzer import historical_analyzer
-from app.services.demo_seed import ensure_demo_historical_data
+from app.services.demo_seed import ensure_demo_historical_data, ensure_watchlist_historical_gaps
 from app.services.fundamental_analyzer import fundamental_analyzer
 from app.services.technical_calculator import technical_calculator
+from app.services.investment_committee import build_committee_report
 from app.services.stock_ranker import stock_ranker, _public_stock_row
 from app.services.sector_analyzer import sector_analyzer
 
@@ -39,19 +43,22 @@ async def market_overview(fast: bool = Query(True, description='Bỏ qua sync VN
     if cached is not None and now - float(_overview_cache.get('ts') or 0) < OVERVIEW_CACHE_SECONDS:
         return JSONResponse(cached)
 
-    from app.services.demo_seed import ensure_watchlist_historical_gaps
-
-    await ensure_demo_historical_data()
-    await ensure_watchlist_historical_gaps()
-    # fast=true: chỉ đọc DB (sync chạy nền mỗi 60s lúc startup) — tránh treo request
-    if not fast:
-        from app.services.stock_ingest import sync_market_snapshot
-
+    if fast:
+        # Sync VCI batch (~4s) tối đa mỗi 8–10s; không seed OHLC nặng.
         try:
+            await sync_market_snapshot_if_stale()
+        except Exception:
+            pass
+        watchlist_items = await load_watchlist_items(skip_sync=True)
+    else:
+        await ensure_demo_historical_data()
+        await ensure_watchlist_historical_gaps()
+        try:
+            await sync_market_snapshot_if_stale()
             await sync_market_snapshot()
         except Exception:
             pass
-    watchlist_items = await load_watchlist_items()
+        watchlist_items = await load_watchlist_items(skip_sync=False)
 
     async with AsyncSessionLocal() as session:
         gainers_result = await session.execute(
@@ -160,8 +167,8 @@ async def market_overview(fast: bool = Query(True, description='Bỏ qua sync VN
         ],
         'market_session': vietnam_market_session(),
         'quote_source': (
-            'Giá watchlist: ưu tiên VNDirect finho; nếu không có thì dùng OHLC trong DB. '
-            'Dữ liệu demo được seed tự động khi DB trống để giao diện và agent hoạt động.'
+            f'Giá watchlist: vnstock/VCI realtime (~{SYNC_TTL_SECONDS}s/lần, trễ ≤{QUOTE_MAX_DELAY_SECONDS}s). '
+            'Fallback VNDirect finho hoặc OHLC demo khi thiếu mã.'
         ),
     }
     _overview_cache['body'] = body
@@ -183,11 +190,9 @@ async def market_sectors(
         return JSONResponse(_sector_cache['body'])
 
     try:
-    from app.services.demo_seed import ensure_watchlist_historical_gaps
-
-    await ensure_demo_historical_data()
-    await ensure_watchlist_historical_gaps()
-    body = await sector_analyzer.build_sector_analysis(include_finfo=not fast)
+        await ensure_demo_historical_data()
+        await ensure_watchlist_historical_gaps()
+        body = await sector_analyzer.build_sector_analysis(include_finfo=not fast)
         _sector_cache['body'] = body
         _sector_cache['ts'] = time.monotonic()
         return JSONResponse(body)
@@ -510,13 +515,24 @@ async def get_top_stocks(
         hold_stocks = [_public_stock_row(s) for s in ranking.get('hold_stocks', [])[:limit]]
         sell_stocks = [_public_stock_row(s) for s in ranking.get('sell_stocks', [])[:limit]]
         
+        committee = await build_committee_report(ranking)
         return JSONResponse({
             'timestamp': ranking.get('timestamp'),
             'analysis_period_days': 60,
             'analysis_period_text': '2 months',
             'min_confidence_threshold': min_confidence,
             'summary': ranking.get('summary', {}),
-            'best_stock': all_ranked[0]['symbol'] if all_ranked else None,
+            'workflow': committee.get('workflow'),
+            'pipeline': ranking.get('pipeline'),
+            'scan_passed': ranking.get('scan_passed', []),
+            'sell_top_candidates': ranking.get('sell_top_candidates', []),
+            'excluded_stocks': ranking.get('excluded_stocks', []),
+            'case_catalog': ranking.get('case_catalog', []),
+            'best_stock': committee.get('best_stock') or (all_ranked[0]['symbol'] if all_ranked else None),
+            'worst_stock': committee.get('worst_stock'),
+            'best_pick': committee.get('best_pick'),
+            'worst_pick': committee.get('worst_pick'),
+            'early_sell_alerts': committee.get('early_sell_alerts', []),
             'buy_recommendations': buy_stocks,
             'hold_recommendations': hold_stocks,
             'sell_recommendations': sell_stocks,

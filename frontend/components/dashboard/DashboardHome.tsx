@@ -7,6 +7,8 @@ import WatchlistMovers from './WatchlistMovers';
 import AgentDebatePanel from '../agent/AgentDebatePanel';
 import AIStockRanking from './AIStockRanking';
 import { apiUrl, WATCHLIST_FALLBACK_SYMBOLS } from '../../lib/api';
+import { useCommitteeReport } from '../../hooks/useCommitteeReport';
+import { resolveDebateSymbol } from '../../types/committee';
 
 export type WatchlistRow = {
   symbol: string;
@@ -59,7 +61,8 @@ export type DashboardData = {
   chart_preview?: Array<{ name: string; value: number }>;
 };
 
-const CLIENT_FETCH_MS = 12_000;
+const CLIENT_FETCH_MS = 25_000;
+const MARKET_REFRESH_MS = 12_000;
 
 function emptyDashboard(): DashboardData {
   return {
@@ -129,6 +132,12 @@ export default function DashboardHome() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const {
+    data: committeeReport,
+    isLoading: committeeLoading,
+    isFetching: committeeFetching,
+  } = useCommitteeReport();
+  const debateSymbol = resolveDebateSymbol(committeeReport);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -146,7 +155,7 @@ export default function DashboardHome() {
 
   useEffect(() => {
     load();
-    const id = setInterval(load, 60_000);
+    const id = setInterval(load, MARKET_REFRESH_MS);
     return () => clearInterval(id);
   }, [load]);
 
@@ -156,7 +165,8 @@ export default function DashboardHome() {
       ? { symbol: item, price: 0, change: 0, market_session: session }
       : { ...item, market_session: item.market_session ?? session },
   );
-  const suggestedSymbol = watchlist[0]?.symbol ?? 'SSI';
+  const debatePending = committeeLoading || committeeFetching;
+  const debateReady = Boolean(debateSymbol);
 
   return (
     <main className="min-h-screen px-6 py-8 text-slate-100">
@@ -224,10 +234,33 @@ export default function DashboardHome() {
             <div>
               <p className="text-sm uppercase tracking-[0.24em] text-slate-400">AI Debate Room</p>
               <h2 className="text-2xl font-semibold">Agent recommendation chain</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                {debateReady ? (
+                  <>
+                    Phân tích sâu mã{' '}
+                    <span className="font-mono text-violet-300">{debateSymbol}</span> (best pick hội đồng)
+                  </>
+                ) : debatePending ? (
+                  'Đang chờ hội đồng chọn best pick…'
+                ) : (
+                  'Chưa có best pick — xem AI ranking bên dưới'
+                )}
+              </p>
             </div>
             <TrendingUp className="h-5 w-5 text-slate-300" />
           </div>
-          <AgentDebatePanel symbol={suggestedSymbol} />
+          {debateReady ? (
+            <AgentDebatePanel symbol={debateSymbol!} />
+          ) : debatePending ? (
+            <div className="flex items-center gap-2 rounded-2xl border border-violet-500/20 bg-slate-950/60 px-4 py-8 text-sm text-slate-300">
+              <Loader2 className="h-5 w-5 animate-spin text-violet-400" />
+              Đang tải best pick (một lần cho cả trang)…
+            </div>
+          ) : (
+            <p className="rounded-2xl border border-amber-500/25 bg-amber-950/30 px-4 py-6 text-sm text-amber-100">
+              Hội đồng chưa chốt mã mua. Kiểm tra backend hoặc bấm Làm mới ở AI ranking.
+            </p>
+          )}
         </section>
 
         <section className="section-card w-full">

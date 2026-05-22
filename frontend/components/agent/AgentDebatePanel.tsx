@@ -49,10 +49,19 @@ function formatAgentConfidencePct(value: number): string {
   return `${Math.round(pct)}%`;
 }
 
-export default function AgentDebatePanel({ symbol }: { readonly symbol: string }) {
+export default function AgentDebatePanel({
+  symbol,
+  enabled = true,
+}: {
+  readonly symbol: string;
+  readonly enabled?: boolean;
+}) {
   const { data, isLoading } = useQuery<DebateResponse>({
     queryKey: ['agentDebate', symbol],
     queryFn: () => getAgentDebate(symbol),
+    enabled: enabled && symbol.length > 0,
+    staleTime: 5 * 60 * 1000,
+    refetchOnWindowFocus: false,
   });
   const debate: DebateItem[] = data?.debate ?? [];
   const consensus = data?.consensus;

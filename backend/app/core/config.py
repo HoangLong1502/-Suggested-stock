@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     environment: str = 'development'
     api_prefix: str = '/api/v1'
     vnstock_enable: bool = True
+    # Chu kỳ sync giá (VCI / vnstock) — mục tiêu trễ ≤ quote_max_delay_seconds
+    quote_sync_interval_seconds: int = 8
+    quote_max_delay_seconds: int = 10
 
     class Config:
         env_file = '.env'
