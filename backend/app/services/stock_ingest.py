@@ -273,6 +273,10 @@ async def _sync_market_snapshot_impl() -> None:
     global _last_sync_monotonic
     _last_sync_monotonic = time_module.monotonic()
 
+    from app.services.market_ws import notify_market_update
+
+    asyncio.create_task(notify_market_update())
+
 
 async def sync_market_snapshot() -> None:
     async with _sync_lock:

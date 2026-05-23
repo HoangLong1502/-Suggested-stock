@@ -10,6 +10,15 @@ export const apiUrl = (() => {
   return process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:5555/api/v1';
 })();
 
+/** WebSocket giá realtime (cùng host với API, không qua /api/v1). */
+export function marketWsUrl(): string {
+  const httpBase = apiUrl.replace(/\/api\/v1\/?$/i, '');
+  if (httpBase.startsWith('https://')) {
+    return `${httpBase.replace('https://', 'wss://')}/ws/market`;
+  }
+  return `${httpBase.replace('http://', 'ws://')}/ws/market`;
+}
+
 const SSR_FETCH_MS = 70_000;
 
 async function fetchWithTimeout(url: string, ms: number): Promise<Response> {

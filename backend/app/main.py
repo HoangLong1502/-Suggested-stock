@@ -10,6 +10,7 @@ from app.api.v1.routes import router as market_router
 from app.models.schema import Base
 from app.models.postgres import engine
 from app.services.demo_seed import ensure_demo_historical_data, ensure_watchlist_historical_gaps
+from app.services.market_ws import register as ws_register, unregister as ws_unregister
 from app.services.stock_ingest import ensure_default_watchlist, periodic_market_sync
 
 app = FastAPI(title='BotTrading AI Stock Platform')
@@ -23,9 +24,6 @@ app.add_middleware(
 
 app.include_router(market_router, prefix='/api/v1')
 app.include_router(agent_router, prefix='/api/v1')
-
-connected_websockets: list[WebSocket] = []
-
 
 @app.on_event('startup')
 async def startup_event():
@@ -59,12 +57,13 @@ async def root():
 
 @app.websocket('/ws/market')
 async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    connected_websockets.append(websocket)
+    await ws_register(websocket)
     try:
         while True:
             data = await websocket.receive_text()
             if data == 'ping':
                 await websocket.send_json({'type': 'pong'})
     except WebSocketDisconnect:
-        connected_websockets.remove(websocket)
+        await ws_unregister(websocket)
+    except Exception:
+        await ws_unregister(websocket)
