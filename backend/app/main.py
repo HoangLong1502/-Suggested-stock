@@ -25,8 +25,24 @@ app.add_middleware(
 app.include_router(market_router, prefix='/api/v1')
 app.include_router(agent_router, prefix='/api/v1')
 
+async def _wait_for_database(max_attempts: int = 30, delay_sec: float = 1.0) -> None:
+    """Postgres/DNS có thể chưa sẵn sàng ngay khi container backend start (đặc biệt trên Windows)."""
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.execute(text('SELECT 1'))
+            return
+        except Exception as exc:
+            last_err = exc
+            if attempt < max_attempts:
+                await asyncio.sleep(delay_sec)
+    raise RuntimeError(f'Database not reachable after {max_attempts} attempts') from last_err
+
+
 @app.on_event('startup')
 async def startup_event():
+    await _wait_for_database()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.execute(

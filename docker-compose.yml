@@ -11,6 +11,12 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U bottrader -d bottrading']
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
 
   redis:
     image: redis:7-alpine
@@ -27,9 +33,12 @@ services:
       - ./backend:/app
     ports:
       - '5555:8000'
+    restart: unless-stopped
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql+asyncpg://bottrader:bottrader@postgres:5432/bottrading
       - REDIS_URL=redis://redis:6379/0
