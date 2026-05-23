@@ -53,6 +53,10 @@ async def detect_early_downtrend_sell(
     symbol: str,
     pipeline: Dict[str, Any],
     scan_meta: Optional[Dict[str, Any]] = None,
+    *,
+    committee_recommendation: Optional[str] = None,
+    agents_buy: int = 0,
+    agents_sell: int = 0,
 ) -> Optional[Dict[str, Any]]:
     """
     Tín hiệu SELL sớm: downtrend hình thành trước khi lỡ vùng bán đỉnh.
@@ -62,8 +66,15 @@ async def detect_early_downtrend_sell(
     agents = pipeline.get('agents', [])
     verdict = str(decision.get('verdict', 'hold')).lower()
     extra = decision.get('extra', {}) or {}
-    sell_votes = int(extra.get('sell_agents', 0))
-    buy_votes = int(extra.get('buy_agents', 0))
+    sell_votes = int(extra.get('sell_agents', 0) or agents_sell)
+    buy_votes = int(extra.get('buy_agents', 0) or agents_buy)
+    rec = str(committee_recommendation or verdict).lower()
+
+    # Đồng thuận MUA — không đưa vào cảnh báo downtrend (tránh PXL vừa best vừa SELL)
+    if rec == 'buy' and buy_votes >= sell_votes and verdict != 'sell':
+        return None
+    if rec == 'buy' and buy_votes >= 2:
+        return None
 
     hist = await historical_analyzer.full_historical_analysis(symbol, days=60)
     if hist.get('status') == 'no_data':
@@ -141,20 +152,39 @@ async def detect_early_downtrend_sell(
     }
 
 
-def select_best_pick(all_ranked: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+def select_best_pick(
+    all_ranked: List[Dict[str, Any]],
+    *,
+    exclude_symbols: Optional[set[str]] = None,
+) -> Optional[Dict[str, Any]]:
     if not all_ranked:
         return None
-    buy_first = [s for s in all_ranked if s.get('recommendation') == 'buy']
+    blocked = {str(s).upper() for s in (exclude_symbols or set())}
+
+    def _ok(row: Dict[str, Any]) -> bool:
+        sym = str(row.get('symbol', '')).upper()
+        if not sym or sym in blocked:
+            return False
+        if str(row.get('recommendation', '')).lower() == 'sell':
+            return False
+        return True
+
+    buy_first = [s for s in all_ranked if _ok(s) and s.get('recommendation') == 'buy']
     bottom_first = [
         s
         for s in all_ranked
-        if s.get('scan_case_id') in ('bottom_fishing', 'whale_shakeout_recovery', 'oversold_bounce')
+        if _ok(s)
+        and s.get('scan_case_id') in ('bottom_fishing', 'whale_shakeout_recovery', 'oversold_bounce')
+        and int(s.get('agents_sell', 0) or 0) < int(s.get('agents_buy', 0) or 0)
     ]
+    hold_ok = [s for s in all_ranked if _ok(s) and str(s.get('recommendation', '')).lower() == 'hold']
     if buy_first:
         return buy_first[0]
     if bottom_first:
         return bottom_first[0]
-    return all_ranked[0]
+    if hold_ok:
+        return hold_ok[0]
+    return None
 
 
 def select_worst_pick(
@@ -229,32 +259,50 @@ async def build_committee_report(ranking: Dict[str, Any]) -> Dict[str, Any]:
     excluded = ranking.get('excluded_stocks', [])
     scan_by_sym = {r['symbol']: r for r in ranking.get('scan_passed', [])}
 
-    best = select_best_pick(all_ranked)
-    worst = select_worst_pick(all_ranked, sell_top, excluded)
-
     early_alerts: List[Dict[str, Any]] = []
     for row in all_ranked:
         sym = row.get('symbol')
         if not sym:
             continue
-        alert = await detect_early_downtrend_sell(sym, row.get('_pipeline', {}), scan_by_sym.get(sym))
+        alert = await detect_early_downtrend_sell(
+            sym,
+            row.get('_pipeline', {}),
+            scan_by_sym.get(sym),
+            committee_recommendation=str(row.get('recommendation', '')),
+            agents_buy=int(row.get('agents_buy', 0) or 0),
+            agents_sell=int(row.get('agents_sell', 0) or 0),
+        )
         if alert:
             early_alerts.append(alert)
 
+    early_syms = {str(a['symbol']).upper() for a in early_alerts}
+
     for row in sell_top:
         sym = row.get('symbol')
-        if sym and not any(a['symbol'] == sym for a in early_alerts):
-            early_alerts.append(
-                {
-                    'symbol': sym,
-                    'urgency': 'SELL ON STRENGTH',
-                    'action': 'sell',
-                    'signals': [row.get('case_label_vi', 'Gần kháng cự / quá mua')],
-                    'reason_vi': 'Lọc sơ bộ: vùng bán đỉnh — cân nhắc chốt lời.',
-                }
-            )
+        if not sym:
+            continue
+        su = str(sym).upper()
+        if su in early_syms:
+            continue
+        early_alerts.append(
+            {
+                'symbol': sym,
+                'urgency': 'SELL ON STRENGTH',
+                'action': 'sell',
+                'signals': [row.get('case_label_vi', 'Gần kháng cự / quá mua')],
+                'reason_vi': 'Lọc sơ bộ: vùng bán đỉnh — cân nhắc chốt lời.',
+            },
+        )
+        early_syms.add(su)
 
     early_alerts.sort(key=lambda a: a.get('risk_score', 0), reverse=True)
+
+    best = select_best_pick(all_ranked, exclude_symbols=early_syms)
+    worst = select_worst_pick(all_ranked, sell_top, excluded)
+
+    if best:
+        best_sym = str(best['symbol']).upper()
+        early_alerts = [a for a in early_alerts if str(a['symbol']).upper() != best_sym]
 
     best_pick: Optional[Dict[str, Any]] = None
     if best:

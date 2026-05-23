@@ -9,6 +9,7 @@ import AIStockRanking from './AIStockRanking';
 import { apiUrl, WATCHLIST_FALLBACK_SYMBOLS } from '../../lib/api';
 import { useCommitteeReport } from '../../hooks/useCommitteeReport';
 import { resolveDebateSymbol } from '../../types/committee';
+import { useMarketWebSocket } from '../../hooks/useMarketWebSocket';
 
 export type WatchlistRow = {
   symbol: string;
@@ -62,7 +63,8 @@ export type DashboardData = {
 };
 
 const CLIENT_FETCH_MS = 25_000;
-const MARKET_REFRESH_MS = 12_000;
+/** Fallback polling khi WebSocket mất — WS là kênh chính (~8s từ backend). */
+const MARKET_REFRESH_MS = 60_000;
 
 function emptyDashboard(): DashboardData {
   return {
@@ -138,6 +140,7 @@ export default function DashboardHome() {
     isFetching: committeeFetching,
   } = useCommitteeReport();
   const debateSymbol = resolveDebateSymbol(committeeReport);
+  const { wsConnected } = useMarketWebSocket(data, setData);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -178,6 +181,12 @@ export default function DashboardHome() {
         <div className="flex flex-wrap items-center gap-3 text-slate-300">
           <Sparkles className="h-5 w-5" />
           <span>Realtime ideas, AI debate, watchlists.</span>
+          {wsConnected ? (
+            <span className="inline-flex items-center gap-1.5 text-xs text-emerald-300">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+              Giá live (~8s)
+            </span>
+          ) : null}
           {loading ? (
             <span className="inline-flex items-center gap-1.5 text-xs text-violet-300">
               <Loader2 className="h-3.5 w-3.5 animate-spin" />
