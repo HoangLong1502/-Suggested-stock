@@ -19,10 +19,10 @@ VN_INDEX_SYMBOLS = ['VNINDEX', 'HNX', 'UPCOM']
 DEFAULT_WATCHLIST: List[str] = list(
     dict.fromkeys(
         [
-            'OIL', 'PXL', 'SSI', 'CII', 'MBB', 'BSR', 'DPM', 'HAG', 'MSN', 'MSR', 'SGP',
+            'OIL', 'PLX', 'SSI', 'CII', 'MBB', 'BSR', 'DPM', 'HAG', 'MSN', 'MSR', 'SGP',
             'DCM', 'HPG', 'FPR', 'MCH', 'VTP', 'VTB', 'ACV', 'MWG', 'POW', 'SAB', 'TCB',
             'VCB', 'VIC', 'VJC', 'VNM',
-            'FPT', 'VHM', 'GAS', 'PLX', 'BID',
+            'FPT', 'VHM', 'GAS', 'BID', 'CTG',
         ],
     ),
 )
@@ -224,6 +224,39 @@ async def _persist_stock_quotes(quotes: Dict[str, Dict[str, Any]]) -> None:
                 )
             else:
                 session.add(Stock(symbol=sym, **payload))
+        await session.commit()
+    await _patch_latest_historical_from_quotes(quotes)
+
+
+async def _patch_latest_historical_from_quotes(quotes: Dict[str, Dict[str, Any]]) -> None:
+    """Ghi đè nến demo sai (vd PXL ~68) bằng giá VCI mới nhất."""
+    if not quotes:
+        return
+    async with AsyncSessionLocal() as session:
+        for sym, values in quotes.items():
+            code = str(sym).strip().upper()
+            close = float(values.get('last_price') or 0)
+            if not code or close <= 0:
+                continue
+            res = await session.execute(
+                select(HistoricalPrice)
+                .where(HistoricalPrice.stock_symbol == code)
+                .order_by(desc(HistoricalPrice.date))
+                .limit(1),
+            )
+            row = res.scalar_one_or_none()
+            if row is None:
+                continue
+            meta = dict(row.data_metadata or {})
+            if meta.get('source') != 'demo_seed' and meta.get('quote_source') not in (None, 'demo_seed'):
+                continue
+            row.close_price = close
+            row.high = max(float(row.high or 0), close)
+            row.low = min(float(row.low or close), close) if float(row.low or 0) > 0 else close
+            row.open_price = close
+            meta['source'] = 'vnstock_vci'
+            meta['patched_from_quote'] = True
+            row.data_metadata = meta
         await session.commit()
 
 
@@ -483,10 +516,14 @@ async def load_watchlist_items(*, skip_sync: bool = False) -> List[Dict[str, Any
         else:
             note = None
             qsrc = 'demo_db'
+        display_name = (st.name if st else None) or meta.get('organShortName') or symbol
         items.append(
             {
                 'symbol': symbol,
+                'name': display_name,
+                'exchange': meta.get('exchange') or (st.exchange if st else None),
                 'price': price,
+                'price_unit_vi': 'nghìn VNĐ',
                 'change': change_pct,
                 'change_pct': change_pct,
                 'change_abs': change_abs,

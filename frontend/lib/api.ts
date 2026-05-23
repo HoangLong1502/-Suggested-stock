@@ -83,15 +83,89 @@ export async function getBestStock(): Promise<CommitteeReport> {
   }
 }
 
+export type StockDetailData = {
+  symbol: string;
+  name?: string;
+  organ_name?: string;
+  exchange?: string;
+  prices?: {
+    last: number;
+    reference: number;
+    ceiling: number;
+    floor: number;
+    high: number;
+    low: number;
+    open: number;
+    avg_match: number;
+  };
+  change_pct?: number;
+  volume?: number;
+  distance?: {
+    to_ceiling_pct?: number | null;
+    to_floor_pct?: number | null;
+    from_reference_pct?: number | null;
+  };
+  order_flow?: {
+    pressure?: string;
+    pressure_label_vi?: string;
+    bid_levels?: { price: number; volume: number }[];
+    ask_levels?: { price: number; volume: number }[];
+  };
+  foreign?: { label_vi?: string };
+  quote_source?: string;
+  market_session?: Record<string, unknown>;
+};
+
+export async function getStockDetail(symbol: string): Promise<StockDetailData> {
+  const sym = symbol.trim().toUpperCase();
+  const res = await fetchWithTimeout(`${apiUrl}/market/stock/${encodeURIComponent(sym)}`, 30_000);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}`);
+  }
+  return res.json() as Promise<StockDetailData>;
+}
+
+export type UserBriefInsight = {
+  category: string;
+  title: string;
+  text: string;
+  tone: 'positive' | 'negative' | 'warning' | 'neutral';
+};
+
+export type UserBrief = {
+  headline_vi: string;
+  verdict_vi: string;
+  verdict_tone: string;
+  summary_vi: string;
+  action_vi: string;
+  insights: UserBriefInsight[];
+  warnings: string[];
+  positives: string[];
+  votes: { buy: number; hold: number; sell: number };
+  agent_lines?: Array<{
+    agent: string;
+    agent_vi: string;
+    verdict_vi: string;
+    one_liner: string;
+  }>;
+};
+
 export async function getAgentDebate(symbol: string) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), AGENT_LONG_FETCH_MS);
   try {
-    const res = await fetch(`${apiUrl}/agents/debate/${symbol}`, { cache: 'no-store' });
+    const res = await fetch(`${apiUrl}/agents/debate/${encodeURIComponent(symbol.trim().toUpperCase())}`, {
+      cache: 'no-store',
+      signal: ctrl.signal,
+    });
     if (!res.ok) {
       return { symbol, debate: [], consensus: null };
     }
     return res.json();
   } catch {
     return { symbol, debate: [], consensus: null };
+  } finally {
+    clearTimeout(t);
   }
 }
 

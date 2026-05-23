@@ -1,7 +1,12 @@
+'use client';
+
 import { Activity, Flame, TrendingDown, TrendingUp, Minus } from 'lucide-react';
 
 export type WatchRow = {
   symbol: string;
+  name?: string;
+  exchange?: string;
+  price_unit_vi?: string;
   price: number;
   change: number;
   change_pct?: number;
@@ -81,6 +86,7 @@ export default function WatchlistMovers({
   sessionPhase,
   isTradingHours,
   isTradingDay,
+  onSymbolClick,
 }: {
   readonly watchlist: ReadonlyArray<WatchRow>;
   readonly topGainers: ReadonlyArray<MoverRow>;
@@ -89,6 +95,7 @@ export default function WatchlistMovers({
   readonly sessionPhase?: string;
   readonly isTradingHours?: boolean;
   readonly isTradingDay?: boolean;
+  readonly onSymbolClick?: (symbol: string) => void;
 }) {
   const sessionGlobal = { phase: sessionPhase, isTradingHours, isTradingDay };
   return (
@@ -98,9 +105,9 @@ export default function WatchlistMovers({
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-violet-300/90">Watchlist</p>
             <h2 className="mt-1 text-2xl font-bold tracking-tight text-white">Danh mã theo dõi</h2>
-            <p className="mt-1 max-w-3xl text-sm text-slate-400">
-              Sau khi hết phiên, bảng hiển thị <span className="text-slate-200">giá đóng cửa / tham chiếu cuối</span> và % so
-              với phiên liền trước. Trong giờ giao dịch, giá phản ánh bản ghi mới nhất từ nguồn.
+            <p className="mt-1 max-w-3xl text-sm leading-relaxed text-slate-300">
+              Bấm vào mã để xem trần/sàn/TC, sổ lệnh và <span className="font-medium text-violet-200">AI phân tích</span>. Sau phiên hiển thị{' '}
+              <span className="text-slate-100">giá đóng cửa / tham chiếu cuối</span> và % so với phiên trước.
             </p>
           </div>
           {sessionLabel ? (
@@ -117,33 +124,58 @@ export default function WatchlistMovers({
             const up = p >= 0;
             const ctx = priceContextForRow(item, sessionGlobal);
             return (
-              <div
+              <button
+                type="button"
                 key={item.symbol}
-                className="group relative overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-900/95 via-slate-950 to-slate-950 p-4 shadow-lg shadow-black/20 ring-1 ring-white/5 transition hover:border-violet-500/40 hover:ring-violet-500/20"
+                onClick={() => onSymbolClick?.(item.symbol)}
+                className="group relative w-full overflow-hidden rounded-2xl border border-white/10 bg-gradient-to-br from-slate-900/95 via-slate-950 to-slate-950 p-4 text-left shadow-lg shadow-black/20 ring-1 ring-white/5 transition hover:border-violet-500/40 hover:ring-violet-500/20 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
               >
                 <div className="absolute right-0 top-0 h-24 w-24 rounded-full bg-violet-600/10 blur-2xl" />
                 <div className="relative flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="font-mono text-lg font-bold tracking-wide text-white">{item.symbol}</p>
+                      {item.exchange ? (
+                        <span className="rounded bg-slate-700/80 px-1.5 py-0.5 text-[10px] font-semibold text-slate-200">
+                          {item.exchange}
+                        </span>
+                      ) : null}
                       <span
-                        className={`rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                        className={`rounded-md px-2 py-0.5 text-[11px] font-bold uppercase tracking-wider ${
                           ctx.badge === 'Trong phiên'
-                            ? 'bg-emerald-500/20 text-emerald-200 ring-1 ring-emerald-500/30'
+                            ? 'bg-emerald-500/30 text-emerald-50 ring-1 ring-emerald-400/40'
                             : ctx.badge === 'Đóng phiên' || ctx.badge === 'Đóng cửa'
-                              ? 'bg-amber-500/15 text-amber-100 ring-1 ring-amber-400/25'
-                              : 'bg-slate-600/40 text-slate-200 ring-1 ring-white/10'
+                              ? 'bg-amber-500/35 text-amber-50 ring-1 ring-amber-400/50'
+                              : 'bg-slate-600/60 text-slate-100 ring-1 ring-white/20'
                         }`}
                       >
                         {ctx.badge}
                       </span>
                     </div>
-                    <p className="mt-0.5 text-[11px] leading-snug text-slate-500">{ctx.hint}</p>
+                    {item.name && item.name !== item.symbol ? (
+                      <p className="mt-0.5 line-clamp-2 text-xs font-medium leading-snug text-slate-300" title={item.name}>
+                        {item.name}
+                      </p>
+                    ) : null}
+                    <p
+                      className={`mt-2 rounded-lg border px-2.5 py-1.5 text-sm font-semibold leading-relaxed ${
+                        ctx.badge === 'Đóng phiên' || ctx.badge === 'Đóng cửa'
+                          ? 'border-amber-400/45 bg-amber-950/70 text-amber-50'
+                          : 'border-slate-600/50 bg-slate-800/90 text-slate-100'
+                      }`}
+                    >
+                      {ctx.hint}
+                    </p>
                     <p className="mt-2 font-mono text-2xl font-semibold tabular-nums text-slate-100">
                       {(item.price ?? 0).toLocaleString('vi-VN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      <span className="ml-1 text-sm font-normal text-slate-400">
+                        {item.price_unit_vi ?? 'nghìn VNĐ'}
+                      </span>
                     </p>
                     {item.trading_date ? (
-                      <p className="mt-1 text-[11px] uppercase tracking-wider text-slate-500">Phiên {item.trading_date}</p>
+                      <p className="mt-1.5 text-sm font-semibold uppercase tracking-wide text-slate-200">
+                        Phiên {item.trading_date}
+                      </p>
                     ) : null}
                   </div>
                   <div className="text-right">
@@ -157,16 +189,16 @@ export default function WatchlistMovers({
                       </span>
                     </div>
                     {item.signal_vi ? (
-                      <p className="mt-2 text-[11px] font-medium text-slate-400">{item.signal_vi}</p>
+                      <p className="mt-2 text-sm font-semibold text-slate-200">{item.signal_vi}</p>
                     ) : null}
                   </div>
                 </div>
                 {item.volume != null && item.volume > 0 ? (
-                  <p className="relative mt-3 border-t border-white/5 pt-2 text-[11px] text-slate-500">
+                  <p className="relative mt-3 border-t border-white/15 pt-2.5 text-sm font-semibold text-slate-200">
                     KL: {item.volume.toLocaleString('vi-VN', { maximumFractionDigits: 0 })}
                   </p>
                 ) : null}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -179,12 +211,12 @@ export default function WatchlistMovers({
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-amber-200/80">Signals</p>
             <h2 className="text-xl font-bold text-white">Top movers</h2>
-            <p className="text-xs text-slate-500">% so với phiên liền trước trong DB; kèm tín hiệu nhanh</p>
+            <p className="text-sm text-slate-300">% so với phiên liền trước trong DB; kèm tín hiệu nhanh</p>
           </div>
         </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <MoverColumn title="Top tăng" accent="emerald" rows={topGainers} />
-          <MoverColumn title="Top giảm" accent="rose" rows={topLosers} />
+          <MoverColumn title="Top tăng" accent="emerald" rows={topGainers} onSymbolClick={onSymbolClick} />
+          <MoverColumn title="Top giảm" accent="rose" rows={topLosers} onSymbolClick={onSymbolClick} />
         </div>
       </section>
     </div>
@@ -195,10 +227,12 @@ function MoverColumn({
   title,
   accent,
   rows,
+  onSymbolClick,
 }: {
   readonly title: string;
   readonly accent: 'emerald' | 'rose';
   readonly rows: ReadonlyArray<MoverRow>;
+  readonly onSymbolClick?: (symbol: string) => void;
 }) {
   const ring = accent === 'emerald' ? 'ring-emerald-500/20' : 'ring-rose-500/20';
   const bar = accent === 'emerald' ? 'from-emerald-500/80' : 'from-rose-500/80';
@@ -245,17 +279,19 @@ function MoverColumn({
           const up = p >= 0;
           const color = accent === 'emerald' ? (up ? 'text-emerald-400' : 'text-slate-400') : up ? 'text-slate-400' : 'text-rose-400';
           return (
-            <li
-              key={`${row.symbol}-${idx}`}
-              className="flex items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/20 px-3 py-2.5"
-            >
+            <li key={`${row.symbol}-${idx}`}>
+              <button
+                type="button"
+                onClick={() => onSymbolClick?.(row.symbol)}
+                className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/5 bg-black/20 px-3 py-2.5 text-left transition hover:border-violet-500/30 hover:bg-black/35 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
+              >
               <div className="flex min-w-0 flex-1 items-center gap-3">
                 <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/5 font-mono text-xs font-bold text-slate-400">
                   {idx + 1}
                 </span>
                 <div className="min-w-0">
                   <p className="font-mono font-semibold text-white">{row.symbol}</p>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-400">
                     {row.last_close != null && row.last_close > 0 ? (
                       <span>Đóng {row.last_close.toFixed(2)}</span>
                     ) : null}
@@ -265,7 +301,7 @@ function MoverColumn({
                     {row.trading_date ? <span className="text-violet-400/80">· {row.trading_date}</span> : null}
                   </div>
                   {row.signal_vi ? (
-                    <p className="mt-1 flex items-center gap-1.5 text-[11px] font-medium text-slate-400">
+                    <p className="mt-1 flex items-center gap-1.5 text-xs font-medium text-slate-300">
                       <SignalIcon signal={row.signal} />
                       {row.signal_vi}
                     </p>
@@ -279,6 +315,7 @@ function MoverColumn({
                   {p.toFixed(2)}%
                 </span>
               </div>
+              </button>
             </li>
           );
         })}

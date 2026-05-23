@@ -28,6 +28,8 @@ from app.services.technical_calculator import technical_calculator
 from app.services.investment_committee import build_committee_report
 from app.services.stock_ranker import stock_ranker, _public_stock_row
 from app.services.sector_analyzer import sector_analyzer
+from app.services.vn_realtime_quotes import fetch_vci_symbol_detail
+from app.services.symbol_user_brief import build_symbol_user_brief
 
 router = APIRouter()
 
@@ -174,6 +176,52 @@ async def market_overview(fast: bool = Query(True, description='Bỏ qua sync VN
     _overview_cache['body'] = body
     _overview_cache['ts'] = time.monotonic()
     return JSONResponse(body)
+
+
+@router.get('/market/stock/{symbol}')
+async def stock_symbol_detail(symbol: str):
+    """Chi tiết 1 mã: trần/sàn/TC, sổ lệnh, áp lực mua-bán (VCI / vnstock)."""
+    sym = symbol.strip().upper()
+    detail = await fetch_vci_symbol_detail(sym)
+    if detail:
+        detail['market_session'] = vietnam_market_session()
+        return JSONResponse(detail)
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(Stock).where(Stock.symbol == sym))
+        st = res.scalar_one_or_none()
+    if st is None:
+        return JSONResponse({'error': f'Không có dữ liệu cho {sym}'}, status_code=404)
+
+    meta = st.stock_metadata or {}
+    ref = float(meta.get('refPrice') or meta.get('basicPrice') or 0)
+    last = float(st.last_price or 0)
+    return JSONResponse(
+        {
+            'symbol': sym,
+            'name': st.name or sym,
+            'prices': {
+                'last': last,
+                'reference': ref,
+                'ceiling': None,
+                'floor': None,
+                'high': None,
+                'low': None,
+                'open': None,
+                'avg_match': None,
+            },
+            'change_pct': float(st.change or 0),
+            'volume': float(st.volume or 0),
+            'order_flow': {
+                'pressure': 'balanced',
+                'pressure_label_vi': 'Chưa có sổ lệnh — chỉ dữ liệu DB',
+                'bid_levels': [],
+                'ask_levels': [],
+            },
+            'quote_source': meta.get('quote_source', 'database'),
+            'market_session': vietnam_market_session(),
+        },
+    )
 
 
 _sector_cache: Dict[str, Any] = {'ts': 0.0, 'body': None}
@@ -327,17 +375,37 @@ async def get_debate(symbol: str):
         ]
         
         decision = agent_results.get('decision', {})
-        
+        extra = decision.get('extra', {}) or {}
+        timing = await recommendation_engine.generate_full_recommendation(symbol, agent_results)
+        market_detail = await fetch_vci_symbol_detail(symbol)
+        user_brief = await build_symbol_user_brief(
+            symbol,
+            agent_results,
+            market_detail=market_detail,
+            timing=timing,
+        )
+
         return JSONResponse({
             'symbol': symbol,
+            'user_brief': user_brief,
             'debate': debate,
             'consensus': {
                 'verdict': decision.get('verdict', 'hold'),
                 'confidence': round(decision.get('score', 0.0) * 100, 1),
                 'reasoning': decision.get('rationale', ''),
                 'overall_reasoning': decision.get('rationale', ''),
-                'consensus_strength': round(decision.get('extra', {}).get('consensus_strength', 0) * 100, 1),
+                'consensus_strength': round(extra.get('consensus_strength', 0) * 100, 1),
+                'agent_votes': {
+                    'buy': int(extra.get('buy_agents', 0)),
+                    'hold': int(extra.get('hold_agents', 0)),
+                    'sell': int(extra.get('sell_agents', 0)),
+                },
             },
+            'buy_timing': timing.get('buy_timing'),
+            'sell_timing': timing.get('sell_timing'),
+            'entry_points': timing.get('entry_points'),
+            'exit_points': timing.get('exit_points'),
+            'current_price': timing.get('current_price'),
             'timestamp': agent_results.get('timestamp'),
         })
     except Exception as e:

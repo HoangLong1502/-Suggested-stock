@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { AlertCircle, Trophy, Users, Target, TrendingDown, ShieldAlert } from 'lucide-react';
 import { apiUrl } from '../../lib/api';
 import { useCommitteeReport } from '../../hooks/useCommitteeReport';
@@ -102,17 +102,19 @@ export default function AIStockRanking() {
   const [error, setError] = useState<string | null>(null);
   const [expandedStock, setExpandedStock] = useState<string | null>(null);
   const [selectedTab, setSelectedTab] = useState<'all' | 'buy' | 'scan' | 'analysis'>('all');
+  const hasRankingOnce = useRef(false);
 
-  const fetchData = useCallback(async () => {
-    setLoading(true);
+  const fetchData = useCallback(async (silent = false) => {
+    if (!silent && !hasRankingOnce.current) setLoading(true);
     setError(null);
     await fetchTopStocks();
+    hasRankingOnce.current = true;
     setLoading(false);
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 10 * 60 * 1000); // Mỗi phân tích rất nặng — refresh 10 phút
+    fetchData(false);
+    const interval = setInterval(() => fetchData(true), 10 * 60 * 1000);
     return () => clearInterval(interval);
   }, [fetchData]);
 
@@ -232,7 +234,7 @@ export default function AIStockRanking() {
           </div>
           <button
             type="button"
-            onClick={fetchData}
+            onClick={() => fetchData(false)}
             className="shrink-0 rounded-xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-white/10"
           >
             Làm mới

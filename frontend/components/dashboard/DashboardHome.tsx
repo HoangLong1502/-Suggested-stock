@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowUpRight, Loader2, Sparkles, TrendingUp } from 'lucide-react';
 import MarketOverview from './MarketOverview';
 import WatchlistMovers from './WatchlistMovers';
+import StockSymbolModal from './StockSymbolModal';
 import AgentDebatePanel from '../agent/AgentDebatePanel';
 import AIStockRanking from './AIStockRanking';
 import { apiUrl, WATCHLIST_FALLBACK_SYMBOLS } from '../../lib/api';
@@ -13,6 +14,9 @@ import { useMarketWebSocket } from '../../hooks/useMarketWebSocket';
 
 export type WatchlistRow = {
   symbol: string;
+  name?: string;
+  exchange?: string;
+  price_unit_vi?: string;
   price: number;
   change: number;
   change_pct?: number;
@@ -134,6 +138,7 @@ export default function DashboardHome() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [detailSymbol, setDetailSymbol] = useState<string | null>(null);
   const {
     data: committeeReport,
     isLoading: committeeLoading,
@@ -141,34 +146,46 @@ export default function DashboardHome() {
   } = useCommitteeReport();
   const debateSymbol = resolveDebateSymbol(committeeReport);
   const { wsConnected } = useMarketWebSocket(data, setData);
+  const hasLoadedOnce = useRef(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const load = useCallback(async (options?: { silent?: boolean }) => {
+    const silent = options?.silent ?? hasLoadedOnce.current;
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const next = await fetchOverview();
       setData(next);
+      hasLoadedOnce.current = true;
     } catch {
       setError('Không tải được dữ liệu thị trường. Kiểm tra backend đang chạy.');
       setData(emptyDashboard());
+      hasLoadedOnce.current = true;
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    load();
-    const id = setInterval(load, MARKET_REFRESH_MS);
-    return () => clearInterval(id);
+    load({ silent: false });
   }, [load]);
 
+  useEffect(() => {
+    if (wsConnected) return;
+    const id = setInterval(() => load({ silent: true }), MARKET_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [load, wsConnected]);
+
   const session = data?.market_session;
-  const watchlist = (data?.watchlist ?? []).map((item) =>
-    typeof item === 'string'
-      ? { symbol: item, price: 0, change: 0, market_session: session }
-      : { ...item, market_session: item.market_session ?? session },
+  const watchlist = useMemo(
+    () =>
+      (data?.watchlist ?? []).map((item) =>
+        typeof item === 'string'
+          ? { symbol: item, price: 0, change: 0, market_session: session }
+          : { ...item, market_session: item.market_session ?? session },
+      ),
+    [data?.watchlist, session],
   );
-  const debatePending = committeeLoading || committeeFetching;
+  const debatePending = committeeLoading && !committeeReport;
   const debateReady = Boolean(debateSymbol);
 
   return (
@@ -195,7 +212,7 @@ export default function DashboardHome() {
           ) : (
             <button
               type="button"
-              onClick={load}
+              onClick={() => load({ silent: false })}
               className="rounded-lg border border-white/15 px-3 py-1 text-xs text-slate-200 hover:bg-white/10"
             >
               Làm mới giá
@@ -219,13 +236,13 @@ export default function DashboardHome() {
             </div>
             <ArrowUpRight className="h-5 w-5 text-slate-300" />
           </div>
-          {loading || !data ? <MarketSkeleton /> : <MarketOverview overview={data} />}
+          {!data && loading ? <MarketSkeleton /> : data ? <MarketOverview overview={data} /> : null}
         </section>
 
         <section className="section-card w-full">
-          {loading || !data ? (
+          {!data && loading ? (
             <WatchlistSkeleton />
-          ) : (
+          ) : data ? (
             <WatchlistMovers
               watchlist={watchlist as WatchlistRow[]}
               topGainers={data.top_gainers ?? []}
@@ -234,8 +251,9 @@ export default function DashboardHome() {
               sessionPhase={session?.phase}
               isTradingHours={session?.is_trading_hours}
               isTradingDay={session?.is_trading_day}
+              onSymbolClick={setDetailSymbol}
             />
-          )}
+          ) : null}
         </section>
 
         <section className="section-card w-full">
@@ -276,6 +294,10 @@ export default function DashboardHome() {
           <AIStockRanking />
         </section>
       </div>
+
+      {detailSymbol ? (
+        <StockSymbolModal symbol={detailSymbol} onClose={() => setDetailSymbol(null)} />
+      ) : null}
     </main>
   );
 }
